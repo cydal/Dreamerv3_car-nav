@@ -1,0 +1,225 @@
+# Integrating DreamerV3 with `car_env`
+
+Plan for driving `car_env.CarNavEnv` with the official DreamerV3
+implementation cloned at `world_models/dreamerv3`
+(`danijar/dreamerv3`, commit `e3f0224`, version 3.3.1).
+
+We are **not** reimplementing the algorithm. The work is an adapter plus
+configuration, and the plan below is mostly about the constraints this
+particular box and this particular task impose.
+
+## 1. What the clone expects from an environment
+
+The JAX/`embodied` rewrite does **not** use the Gymnasium API. From
+`embodied/core/base.py` and the reference envs (`embodied/envs/crafter.py`):
+
+- An env subclasses `embodied.Env` and exposes `obs_space` / `act_space` as
+  dicts of `elements.Space`.
+- There is **no `reset()`**. `step(action)` receives a dict containing a
+  `reset` key, and resets itself when that is set or when the previous step
+  ended the episode.
+- `obs_space` must contain `reward`, `is_first`, `is_last`, `is_terminal`.
+- `act_space` must contain `reset`.
+- Keys prefixed `log/` are dropped before reaching the agent
+  (`make_agent` filters them) and are logged instead.
+
+### `from_gym.py` is not usable
+
+The obvious shortcut — wrapping our env in `embodied.envs.from_gym.FromGym` —
+does not work, for three separate reasons:
+
+1. It imports `gym`, not `gymnasium`.
+2. It uses the **4-tuple** step API (`obs, reward, done, info`) and expects
+   `reset()` to return observations only. Our env returns the Gymnasium
+   5-tuple and `(obs, info)`, so it would raise on unpacking.
+3. It derives `is_terminal` from `info.get('is_terminal', done)`, collapsing
+   truncation into termination — exactly the distinction we deliberately kept.
+
+So: write a native `embodied.Env` adapter. It is ~60 lines.
+
+### The termination mapping is the payoff
+
+`embodied` splits episode-end into two flags, which lines up exactly with the
+Gymnasium distinction we preserved when extracting the env:
+
+| our env | `is_last` | `is_terminal` | meaning |
+|---|---|---|---|
+| `terminated=True` (crash) | `True` | `True` | true terminal, value 0 |
+| `truncated=True` (step limit) | `True` | `False` | cutoff, keep bootstrapping |
+| neither | `False` | `False` | mid-episode |
+
+`is_terminal` feeds the continuation head (`conhead`) and the discount used in
+imagination. Had we kept T3D's single `done` flag, we would be teaching the
+world model that running out of time is a terminal state.
+
+### Observation routing is automatic
+
+`dreamerv3/agent.py:21`:
+
+```python
+isimage = lambda s: s.dtype == np.uint8 and len(s.shape) == 3
+```
+
+Any uint8 3-D space goes to the CNN, everything else to the MLP. So our
+existing `image (64,64,3) uint8` and `vector (11,) float32` are routed
+correctly with no configuration.
+
+Image size is constrained by the encoder: `mults: [2,3,4,4]` means four
+successive 2× max-pools, and `rssm.py` asserts the result is between 3 and 16
+per side. **64 → 4×4 ✓** (and 96 → 6×6 ✓). Any multiple of 16 in 48–256 works.
+
+## 2. Where the adapter should live
+
+`make_env` in `dreamerv3/main.py` resolves the env class from a **hardcoded
+dict** keyed by the task-name prefix. There is no plugin hook, so a zero-edit
+integration is not possible. Two options:
+
+- **A.** Copy our adapter into `embodied/envs/carnav.py` and register it.
+  Puts our code inside the clone, so it drifts from our repo and is not
+  covered by our tests.
+- **B (recommended).** Keep the adapter in **our** package as
+  `car_env/embodied_env.py`, and add a one-line registration in the clone
+  pointing at it:
+
+  ```python
+  'carnav': 'car_env.embodied_env:CarNav',
+  ```
+
+B keeps the env code versioned and tested alongside the env it wraps, while
+still getting all of `main.py`'s config plumbing (`--configs carnav`, flag
+overrides, checkpointing) for free. The clone's diff stays at ~10 lines, on a
+branch, easy to rebase onto upstream.
+
+Requires `car_env` to be importable — `pip install -e dreamer-car-nav`.
+
+## 3. Box constraints — these bite before anything else
+
+Measured on this machine, not assumed.
+
+### The default config will OOM immediately
+
+`replay.size: 5e6` and the replay holds chunks **in RAM**
+(`embodied/core/replay.py`: `self.chunks = {}`; `directory` is for
+checkpointing, not paging). Our observation is 64·64·3 = 12,288 B per step,
+so:
+
+| `replay.size` | RAM for replay |
+|---|---|
+| 5e6 (default) | **~60 GB** |
+| 1e6 | ~12 GB |
+| 3e5 | ~3.7 GB |
+| 2e5 | ~2.5 GB |
+
+This box has **15 GB total RAM, ~11 GB available**. Start at
+`replay.size: 2e5` and raise it only if headroom allows. This is the single
+most likely cause of an early crash.
+
+### bfloat16 is not native on this GPU
+
+The GPU is a **Tesla T4, compute capability 7.5 (Turing)**. Hardware bf16
+starts at Ampere (8.0). The default is `jax.compute_dtype: bfloat16`, which on
+Turing is emulated and slow. Set `jax.compute_dtype: float32`.
+
+Note the interaction flagged in `main.py`: prioritized replay is incompatible
+with low-precision gradient scaling. We are on `fracs.uniform: 1.0`
+(no prioritization), so this does not apply either way.
+
+### The default model size is ~200M parameters
+
+`defaults` uses `deter: 8192, units: 1024, depth: 64` — the `size200m` preset.
+That is aimed at Atari/Minecraft, not a 64×64 navigation task, and is a poor
+fit for 15 GB of VRAM alongside a float32 compute dtype. Start at **`size12m`**
+(`deter: 2048, hidden: 256, classes: 16, depth: 16, units: 256`) and scale up
+only if the world model underfits.
+
+### `run.debug` defaults to `True`
+
+`Driver(fns, parallel=not args.debug)`. With the shipped default, all 16 envs
+run **in-process on threads**, GIL-bound. Real runs want
+`--run.debug False`, which switches to one process per env (cloudpickled ctor
+via `portal.Process`) — so the `make_env` callable must be picklable, i.e. a
+module-level class, not a closure over local state.
+
+16 env processes each load their own `CityMap` (~8 MB: RGB + road mask +
+erosion caches + road coordinate list) ≈ 130 MB. Acceptable.
+
+### The `numpy<2` pin is probably not binding on us
+
+`requirements.txt` pins `numpy<2`, but the inline comment gives the reason:
+`# DMLab: <2, MineRLv1.0: <1.24`. We use neither. JAX itself supports NumPy 2,
+and `car_env` was built and verified on 2.2.6.
+
+**Action:** try NumPy 2 first. If something in `embodied` breaks, fall back to
+`<2` and re-run our smoke test to confirm `car_env` is clean on 1.x — it uses
+only long-stable APIs (`asarray`, `rint(out=)`, `take`, `roll`, `default_rng`),
+so this should be a non-event either way.
+
+## 4. The real modelling risk: episodes are too short
+
+Under a random policy, median episode length is **8 steps** (mean 11.8).
+Meanwhile `batch_length: 64` and `replay_context: 1`, so each training
+sequence is 65 steps and would span roughly **eight episode boundaries**.
+
+Dreamer is correct in this regime — `is_first` resets the RSSM state — but it
+is wasteful: the world model spends most of its capacity modelling resets, and
+`imag_length: 15` means nearly every imagined rollout runs past a terminal.
+
+Mitigations, in order of preference:
+
+1. **Expect this to fix itself.** The reward already shapes progress and
+   alignment, so episodes should lengthen quickly once the policy is better
+   than random. Verify by watching `episode/length`.
+2. **Lower `batch_length` to 16–32 initially**, so sequences sit closer to
+   actual episode length.
+3. If episodes stay short, revisit the task rather than the algorithm — this
+   is the same geometry problem behind the 6-step median in the original T3D
+   run (see the scale table in the README).
+
+Worth stating plainly: this is a property of the task we inherited, and it is
+the most likely reason a technically correct integration still fails to learn.
+
+## 5. Verification ladder
+
+Each rung is cheap and isolates one failure mode. Do not skip to the last.
+
+1. **Adapter conformance** — a test in our repo that builds the adapter, runs
+   it through `main.wrap_env` (`NormalizeAction`, `UnifyDtypes`,
+   `CheckSpaces`, `ClipAction`) and drives random actions for a few hundred
+   steps. `CheckSpaces` is the clone's own contract checker, so this catches
+   dtype/shape/range mismatches with a real error message.
+   Also assert `log/` values are **scalars** — `run/train.py` asserts
+   `value.ndim == 0` for them, so `reward_parts` must be flattened, not
+   passed as a dict.
+2. **CPU debug run** — `--configs debug --task carnav_default`, which forces
+   tiny networks, `batch_size: 8`, CPU, and `envs: 4`. Proves the whole
+   pipeline without waiting on GPU or JAX/CUDA setup.
+3. **Random agent** — `--random_agent True`. Exercises driver, replay,
+   streams and logging with the agent removed, so any failure is ours.
+4. **Short GPU run** — `size12m`, float32, `replay.size 2e5`,
+   `--run.debug False`. Confirm JAX sees the T4 and that step throughput is
+   env-bound rather than agent-bound.
+5. **Learning check** — watch `episode/score` and `episode/length` rise above
+   the random-policy baselines (score and median length 8). The `image` key is
+   uint8/3-D, so `run/train.py` automatically stacks it into a video for
+   worker 0 — that gives a free visual of what the agent sees, viewable in
+   `scope`.
+
+Baselines to beat, from `scripts/benchmark.py` and `scripts/smoke_test.py`:
+random policy median length 8, and the env sustains ~3,600 steps/s, so
+DreamerV3 (a few hundred to a few thousand steps/s) will be the bottleneck,
+not us.
+
+## 6. Work items
+
+| # | Item | Where |
+|---|---|---|
+| 1 | conda env `dreamer` (py3.11) + `pip install -r dreamerv3/requirements.txt` | new env, `t3d` untouched |
+| 2 | `pip install -e .` so `car_env` is importable | our repo |
+| 3 | `CarNav(embodied.Env)` adapter | `car_env/embodied_env.py` |
+| 4 | `setup.py` / `pyproject.toml` for our package | our repo |
+| 5 | Register `carnav` in the ctor dict; add `env.carnav` kwargs and a `carnav` named config | clone, on a branch |
+| 6 | Conformance test through `wrap_env` + `CheckSpaces` | `scripts/test_embodied.py` |
+| 7 | Walk the verification ladder | — |
+
+Items 1–2 are setup, 3–5 are the integration proper, 6–7 are verification.
+Nothing here writes any part of the DreamerV3 algorithm.

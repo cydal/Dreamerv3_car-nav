@@ -1,3 +1,6 @@
 .env
 __pycache__
 *.pyc
+
+# Regenerable debug output from scripts/preview_obs.py
+previews/

@@ -1,0 +1,7 @@
+# Environment only. Deliberately minimal so the env imports into any training
+# process without dragging in Qt or a display.
+numpy>=1.24
+pillow>=9.0
+
+# Not required by car_env, only by whatever consumes it:
+#   torch / jax  - for the DreamerV3 implementation (not in this package yet)

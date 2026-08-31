@@ -150,9 +150,8 @@ def write_previews(outdir):
     obs, _ = env.reset(seed=11)
     rng = np.random.default_rng(0)
     trail, pairs, labels2 = [(env.x, env.y)], [], []
-    from PIL import Image
     for i in range(8):
-        top = render_topdown(env, view_px=140, scale=1)
+        top = render_topdown(env, view_px=140, scale=1, trail=trail)
         crop = np.asarray(Image.fromarray(obs["image"]).resize(
             (top.shape[1], top.shape[0]), Image.NEAREST))
         pairs.append(np.concatenate([top, crop], axis=1))

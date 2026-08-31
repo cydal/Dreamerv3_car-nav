@@ -4,3 +4,7 @@ __pycache__
 
 # Regenerable debug output from scripts/preview_obs.py
 previews/
+
+# Working notes: journal + concept explainers for the article. Personal/
+# in-progress, not meant to be reviewed as part of the code history.
+notes/

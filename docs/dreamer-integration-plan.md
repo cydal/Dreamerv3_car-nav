@@ -114,6 +114,27 @@ This box has **15 GB total RAM, ~11 GB available**. Start at
 `replay.size: 2e5` and raise it only if headroom allows. This is the single
 most likely cause of an early crash.
 
+### 3a. cuDNN version drift breaks the first conv op (found by actually running it)
+
+`jax-cuda12-plugin==0.4.33` declares `nvidia-cudnn-cu12<10.0,>=9.1` — a range
+spanning roughly two years of cuDNN releases. Plain `pip install` resolves to
+whatever is newest *at install time*, not whatever jaxlib 0.4.33 (~Sept 2024)
+was actually built and tested against. On this box that was cuDNN 9.25.1.1,
+and the first convolution (the encoder's first `Conv2D`, i.e. the first time
+`image` touches the network) fails:
+
+```
+Unable to load any of {libcudnn_engines_runtime_compiled.so.9.25.1, ...}
+RuntimeError: ... CUDNN_STATUS_SUBLIBRARY_LOADING_FAILED
+```
+
+No amount of reading the source would have surfaced this — it's a runtime
+version-compatibility gap between two packages that individually declare
+themselves compatible. Found by actually running a GPU op, not by reasoning
+about it. Fixed by pinning `nvidia-cudnn-cu12==9.4.0.58` (contemporaneous
+with jaxlib 0.4.33) in `requirements.txt`, verified first with a standalone
+conv op (fast to iterate) before re-running the full pipeline.
+
 ### bfloat16 is not native on this GPU
 
 The GPU is a **Tesla T4, compute capability 7.5 (Turing)**. Hardware bf16
@@ -178,48 +199,81 @@ Mitigations, in order of preference:
 Worth stating plainly: this is a property of the task we inherited, and it is
 the most likely reason a technically correct integration still fails to learn.
 
-## 5. Verification ladder
+## 5. Verification ladder — status: rungs 1–4 done, all green
 
 Each rung is cheap and isolates one failure mode. Do not skip to the last.
+Results below are from actually running each rung, not from planning them.
 
-1. **Adapter conformance** — a test in our repo that builds the adapter, runs
-   it through `main.wrap_env` (`NormalizeAction`, `UnifyDtypes`,
-   `CheckSpaces`, `ClipAction`) and drives random actions for a few hundred
-   steps. `CheckSpaces` is the clone's own contract checker, so this catches
-   dtype/shape/range mismatches with a real error message.
-   Also assert `log/` values are **scalars** — `run/train.py` asserts
-   `value.ndim == 0` for them, so `reward_parts` must be flattened, not
-   passed as a dict.
-2. **CPU debug run** — `--configs debug --task carnav_default`, which forces
-   tiny networks, `batch_size: 8`, CPU, and `envs: 4`. Proves the whole
-   pipeline without waiting on GPU or JAX/CUDA setup.
-3. **Random agent** — `--random_agent True`. Exercises driver, replay,
-   streams and logging with the agent removed, so any failure is ours.
-4. **Short GPU run** — `size12m`, float32, `replay.size 2e5`,
-   `--run.debug False`. Confirm JAX sees the T4 and that step throughput is
-   env-bound rather than agent-bound.
-5. **Learning check** — watch `episode/score` and `episode/length` rise above
-   the random-policy baselines (score and median length 8). The `image` key is
-   uint8/3-D, so `run/train.py` automatically stacks it into a video for
-   worker 0 — that gives a free visual of what the agent sees, viewable in
-   `scope`.
+1. **Adapter conformance** ✅ — `scripts/test_embodied.py` builds the
+   adapter, runs it through `main.wrap_env` (`NormalizeAction`,
+   `UnifyDtypes`, `CheckSpaces`, `ClipAction`) and drives random actions for
+   500 steps across all 5 config variants (`default`, `vector`, `image`,
+   `multitarget`, `footprint`). All passed `CheckSpaces` — the clone's own
+   contract checker — on the first attempt. Also asserts `log/` values are
+   scalars, per `run/train.py`'s `value.ndim == 0` check.
+2. **CPU debug run** ✅ — `--configs carnav debug --run.steps 300` (plus
+   explicit tiny `agent.dyn.rssm.*`/`enc.simple.depth`/`dec.simple.depth`
+   overrides, since `debug`'s regex overrides don't touch `rssm.deter` or
+   CNN `depth` — see the note under work item 5). Ran the **full** pipeline
+   end to end: driver → replay → stream → `agent.train` → checkpoint →
+   logger, with real losses on every head (`con`, `dyn`, `image`, `policy`,
+   `rep`, `repval`, `rew`, `value`, `vector`). Produced `scores.jsonl`,
+   `metrics.jsonl`, a checkpoint, and — unprompted — a `policy_image.mp4`
+   scope artifact (see rung 5; it wasn't supposed to wait until rung 5).
+3. **Random agent** ✅ — `--random_agent True --configs carnav debug`.
+   Episode length 7, matching the standalone-env baseline. Confirms driver/
+   replay/streams/logging all work with the agent removed.
+4. **Short GPU run** ✅, after one real fix — `--configs carnav
+   --run.steps 3000` (thread-based envs; process-per-env `--run.debug False`
+   not yet tried). First attempt failed immediately with
+   `CUDNN_STATUS_SUBLIBRARY_LOADING_FAILED` — see the new §3a below, since
+   this is a box/environment finding as significant as the RAM and dtype
+   ones. After the fix: 3000 steps completed cleanly, peak **8.3 GB** VRAM
+   (comfortably under 15 GB), **fps/train ≈ 900–1120**, GPU util 100% during
+   training. `fps/policy` came in low (≈4) — see the train_ratio finding
+   below, which is a tuning question, not a failure.
+5. **Learning check** — not run as a real training attempt yet (3000 steps
+   is a throughput/pipeline check, far too short to expect learning). The
+   free video artifact already confirmed to be genuinely our env (extracted
+   a frame with `av`: orange buildings, white road, blue water, exactly the
+   city map's palette) — worth knowing this diagnostic exists and works
+   before the first real run, rather than discovering it mid-run.
 
 Baselines to beat, from `scripts/benchmark.py` and `scripts/smoke_test.py`:
 random policy median length 8, and the env sustains ~3,600 steps/s, so
 DreamerV3 (a few hundred to a few thousand steps/s) will be the bottleneck,
 not us.
 
+### 5a. New finding: `train_ratio: 256` throttles interaction, not compute
+
+The 3000-step GPU run's `fps/policy` (≈4) is not a simulator limit — the
+standalone env does ~3,600 steps/s (`scripts/benchmark.py`). It's the
+`carnav` config's `run.train_ratio: 256`, copied by analogy from
+`atari100k` (which faces a *data-starved* regime: a 100k-frame budget on an
+expensive-to-step emulator, so it's worth spending disproportionate compute
+per frame). Our env is the opposite — cheap to step, so a lower
+`train_ratio` (more env interaction per gradient step) may be a better fit
+than the atari100k-style ratio the preset started from. Not changed yet;
+flagged as a tuning question for the first real training attempt rather than
+decided here, the same way the collision-mode call was left as a config
+default rather than a code change.
+
 ## 6. Work items
 
-| # | Item | Where |
-|---|---|---|
-| 1 | conda env `dreamer` (py3.11) + `pip install -r dreamerv3/requirements.txt` | new env, `t3d` untouched |
-| 2 | `pip install -e .` so `car_env` is importable | our repo |
-| 3 | `CarNav(embodied.Env)` adapter | `car_env/embodied_env.py` |
-| 4 | `setup.py` / `pyproject.toml` for our package | our repo |
-| 5 | Register `carnav` in the ctor dict; add `env.carnav` kwargs and a `carnav` named config | clone, on a branch |
-| 6 | Conformance test through `wrap_env` + `CheckSpaces` | `scripts/test_embodied.py` |
-| 7 | Walk the verification ladder | — |
+| # | Item | Where | Status |
+|---|---|---|---|
+| 1 | conda env `dreamer` (py3.11) + `pip install -r dreamerv3/requirements.txt` | new env, `t3d` untouched | ✅ |
+| 2 | `pip install -e .` so `car_env` is importable | our repo | ✅ |
+| 3 | `CarNav(embodied.Env)` adapter | `car_env/embodied_env.py` | ✅ |
+| 4 | `pyproject.toml` for our package | our repo | ✅ |
+| 5 | Register `carnav` in the ctor dict; add `env.carnav` kwargs and a `carnav` named config | clone, branch `carnav-integration` | ✅ — caught a real bug pre-run: an early draft put `task:` inside `env.carnav`, which collides with `make_env`'s positional `task` argument (`TypeError: got multiple values for argument 'task'`) |
+| 6 | Conformance test through `wrap_env` + `CheckSpaces` | `scripts/test_embodied.py` | ✅ — 5/5 variants clean |
+| 7 | Walk the verification ladder | — | ✅ rungs 1–4, see §5 |
+| 8 | Pin `nvidia-cudnn-cu12` (found while doing #7, not planned) | clone `requirements.txt`, same branch | ✅ — see §3a |
+
+Remaining: rung 5 of the ladder (a real training attempt long enough to
+judge learning, not just pipeline health), and the `train_ratio` tuning
+question from §5a.
 
 Items 1–2 are setup, 3–5 are the integration proper, 6–7 are verification.
 Nothing here writes any part of the DreamerV3 algorithm.

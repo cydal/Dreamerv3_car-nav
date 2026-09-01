@@ -75,7 +75,15 @@ class CarNavConfig:
     reward_step: float = -0.1
     reward_crash: float = -100.0
     reward_target: float = 100.0
-    reward_per_clear_sensor: float = 2.5
+    # Kept below reward_step / len(sensor_angles_deg) (0.1/7 ~ 0.014), so that
+    # surviving with every sensor clear (7 * this, per step) never outearns
+    # the per-step existence cost on its own. Without that, a policy that
+    # never approaches the goal can still rack up unbounded reward just by
+    # loitering in open space for longer - which is exactly what happened at
+    # the old value of 2.5 (7 * 2.5 = 17.5/step, dwarfing reward_target's
+    # one-time +100 within ~6 steps of survival). See
+    # notes/journal.md, 2026-09-01, for the training run that found this.
+    reward_per_clear_sensor: float = 0.01
     reward_progress_scale: float = 15.0
     reward_alignment_scale: float = 3.0
 

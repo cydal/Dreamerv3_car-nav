@@ -255,31 +255,76 @@ Results below are from actually running each rung, not from planning them.
    (comfortably under 15 GB), **fps/train ≈ 900–1120**, GPU util 100% during
    training. `fps/policy` came in low (≈4) — see the train_ratio finding
    below, which is a tuning question, not a failure.
-5. **Learning check** — not run as a real training attempt yet (3000 steps
-   is a throughput/pipeline check, far too short to expect learning). The
-   free video artifact already confirmed to be genuinely our env (extracted
-   a frame with `av`: orange buildings, white road, blue water, exactly the
-   city map's palette) — worth knowing this diagnostic exists and works
-   before the first real run, rather than discovering it mid-run.
+5. **Learning check** ✅ run, result: **not learning the actual task**. A
+   60,000-step run (§5b) shows every naive signal improving (score, episode
+   length, image-reconstruction loss) while the metric that actually
+   matters — crash rate — stays at 88–100% throughout, and
+   `distance_to_target` gets worse, not better. This is a reward-design
+   finding, not an integration failure; see §5b.
 
 Baselines to beat, from `scripts/benchmark.py` and `scripts/smoke_test.py`:
 random policy median length 8, and the env sustains ~3,600 steps/s, so
 DreamerV3 (a few hundred to a few thousand steps/s) will be the bottleneck,
 not us.
 
-### 5a. New finding: `train_ratio: 256` throttles interaction, not compute
+### 5a. Resolved: lowered `train_ratio` from 256 to 32
 
 The 3000-step GPU run's `fps/policy` (≈4) is not a simulator limit — the
-standalone env does ~3,600 steps/s (`scripts/benchmark.py`). It's the
+standalone env does ~3,600 steps/s (`scripts/benchmark.py`). It was the
 `carnav` config's `run.train_ratio: 256`, copied by analogy from
-`atari100k` (which faces a *data-starved* regime: a 100k-frame budget on an
-expensive-to-step emulator, so it's worth spending disproportionate compute
-per frame). Our env is the opposite — cheap to step, so a lower
-`train_ratio` (more env interaction per gradient step) may be a better fit
-than the atari100k-style ratio the preset started from. Not changed yet;
-flagged as a tuning question for the first real training attempt rather than
-decided here, the same way the collision-mode call was left as a config
-default rather than a code change.
+`atari100k` (a *data-starved* regime: a 100k-frame budget on an
+expensive-to-step emulator, worth spending disproportionate compute per
+frame — the opposite of our situation). Measured rather than assumed:
+`fps/train` (GPU throughput) came out about the same at both ratios
+(~900-1300 samples/s) — the GPU wasn't idle, the *ratio* was just spending
+that same compute on fewer, more diverse env steps. Changed to **32**
+(matching what `atari`/`dmlab` already use for the same real-time,
+cheap-to-step situation) — `fps/policy` went to ~30-37, roughly 8x more
+distinct experience per wall-clock second. See `notes/journal.md`,
+2026-09-01, for the full reasoning.
+
+### 5b. The learning-check run: score went up 40x, crash rate barely moved
+
+60,000-step run, `carnav` preset with `train_ratio: 32`. Survived 3 native
+segfaults via `scripts/train_carnav.sh`'s retry wrapper (root cause still
+unknown — see §3a/§3b) and completed all 60,000 steps on attempt 4.
+
+Naive read: episode length 12 → 90-236 (6-15x), score ~0 → +500..+2,240
+(40x+), `train/loss/image` 1950 → 687. Every one of these says "it's
+learning."
+
+Correct read, from `scripts/analyze_run.py` (after fixing a metric-reading
+bug — see its commit message): **crash rate 100% in the first third of the
+run, 88.3% in the last third.** No real change.
+`reward_progress` got *more* negative (-0.43 → -2.95/step),
+`reward_alignment` too (-0.05 → -0.38/step), `distance_to_target` got worse
+(220 → 266). Only `reward_clear_sensors` improved (6.9 → 11.8/step).
+Cross-checked visually: 8 frames sampled across the last training video
+(from `scope/epstats-policy_image.mp4`) all show the car centered in an
+open, straight road corridor, goal marker in none of them.
+
+**What happened:** the agent learned to survive longer in open corridors —
+real behavior, not noise — but that increases score mechanically, not
+because it's closer to solving the task. `reward_per_clear_sensor: 2.5`
+across up to 7 sensors gives up to **+17.5 every step**, unbounded with
+episode length; `reward_target: 100` is a **one-time** bonus. Past ~6 steps
+of survival the dense term already exceeds the sparse one; at 200+ steps
+it dwarfs it. DreamerV3 optimized the reward function exactly as written —
+the reward function doesn't actually ask for the goal strongly enough
+relative to loitering safely.
+
+**Not decided today:** how to fix the imbalance. Candidates: lower
+`reward_per_clear_sensor`, cap total per-step shaping reward, raise
+`reward_progress_scale`/`reward_alignment_scale`, or penalize
+time-without-progress directly. Same treatment as collision-mode and
+train_ratio: measured, presented, deferred to a deliberate choice rather
+than changed under time pressure.
+
+**Observability gap found along the way:** `car_env/embodied_env.py` logs
+`log/crashed` but not whether a target was reached, so "did it reach the
+goal" has to be inferred (`1 - crash_rate`, checked against
+`max_episode_steps` never being hit) rather than measured directly. Worth
+adding a `log/reached_target` field before the next run.
 
 ## 6. Work items
 

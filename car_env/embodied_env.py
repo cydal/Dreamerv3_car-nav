@@ -74,6 +74,7 @@ class CarNav:
             "log/episode_reward": elements.Space(np.float32),
             "log/distance_to_target": elements.Space(np.float32),
             "log/crashed": elements.Space(bool),
+            "log/reached_target": elements.Space(bool),
             "log/reward_step": elements.Space(np.float32),
             "log/reward_progress": elements.Space(np.float32),
             "log/reward_alignment": elements.Space(np.float32),
@@ -115,6 +116,15 @@ class CarNav:
             "log/episode_reward": np.float32(info.get("episode_reward", 0.0)),
             "log/distance_to_target": np.float32(info.get("distance_to_target", 0.0)),
             "log/crashed": bool(info.get("crashed", False)),
+            # True only on the final step of an episode that ended by
+            # reaching its last target - mirrors log/crashed so both can be
+            # read the same way: per-episode 'sum' in embodied's episode
+            # aggregator is exactly "did this happen" (0 or 1), and the
+            # cross-episode average of that is the rate. Added after the
+            # first real training run, where "did it reach the goal" had to
+            # be inferred from 1 - crash_rate instead of measured directly -
+            # see notes/journal.md, 2026-09-01.
+            "log/reached_target": bool(is_last and parts.get("target", 0.0) > 0),
             "log/reward_step": np.float32(parts.get("step", 0.0)),
             "log/reward_progress": np.float32(parts.get("progress", 0.0)),
             "log/reward_alignment": np.float32(parts.get("alignment", 0.0)),

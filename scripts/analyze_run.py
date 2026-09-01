@@ -109,9 +109,19 @@ def main():
         print(f"\ncrash rate (fraction of episodes ending in collision):")
         print(f"  first third of run: {crash_early:.1%}")
         print(f"  last  third of run: {crash_late:.1%}")
-        print(f"  (remainder ends via goal-reach or the {1000}-step "
-              f"timeout - check episode length against max_episode_steps "
-              f"to tell which)")
+
+        reach_key = "epstats/log/reached_target/sum"
+        if any(reach_key in r for r in epstats):
+            reach_early = avg_key(early, reach_key)
+            reach_late = avg_key(late, reach_key)
+            print(f"\ngoal-reach rate (fraction of episodes ending at the "
+                  f"final target):")
+            print(f"  first third of run: {reach_early:.1%}")
+            print(f"  last  third of run: {reach_late:.1%}")
+        else:
+            print(f"  (remainder ends via goal-reach or the {1000}-step "
+                  f"timeout - no log/reached_target in this run, added "
+                  f"2026-09-01, so this has to stay an inference)")
 
         print("\nreward_parts breakdown (per-step average, first vs last "
               "third of run):")

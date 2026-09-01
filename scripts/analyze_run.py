@@ -87,16 +87,41 @@ def main():
 
     epstats = load_epstats(logdir)
     if epstats:
-        print("\nreward_parts breakdown (mean per episode), first vs last "
-              "aggregate window:")
+        # log/crashed is 0/1, true only on an episode's final step, so its
+        # per-episode 'sum' (or equivalently 'max') is exactly "did this
+        # episode crash" - and epstats' own aggregation across episodes in
+        # the window is an average, so epstats/log/crashed/sum is actually
+        # the *crash rate*, not a sum. Reading '/avg' instead (the per-step
+        # average, diluted by episode length) looks similar in magnitude but
+        # means something different and is the wrong number for "did it
+        # learn to stop crashing" - it drops as episodes get longer even if
+        # every single one of them still ends in a crash. Learned this the
+        # hard way; kept the comment so it doesn't happen twice.
+        n = len(epstats)
+        early, late = epstats[: max(1, n // 3)], epstats[-max(1, n // 3):]
+
+        def avg_key(rows, key):
+            vals = [r[key] for r in rows if key in r]
+            return sum(vals) / len(vals) if vals else float("nan")
+
+        crash_early = avg_key(early, "epstats/log/crashed/sum")
+        crash_late = avg_key(late, "epstats/log/crashed/sum")
+        print(f"\ncrash rate (fraction of episodes ending in collision):")
+        print(f"  first third of run: {crash_early:.1%}")
+        print(f"  last  third of run: {crash_late:.1%}")
+        print(f"  (remainder ends via goal-reach or the {1000}-step "
+              f"timeout - check episode length against max_episode_steps "
+              f"to tell which)")
+
+        print("\nreward_parts breakdown (per-step average, first vs last "
+              "third of run):")
         keys = ["log/reward_step", "log/reward_progress",
                 "log/reward_alignment", "log/reward_clear_sensors",
-                "log/crashed", "log/distance_to_target"]
-        first, last = epstats[0], epstats[-1]
+                "log/distance_to_target"]
         for key in keys:
             k_avg = f"epstats/{key}/avg"
-            if k_avg in first and k_avg in last:
-                print(f"    {key:28s} {first[k_avg]:9.2f} -> {last[k_avg]:9.2f}")
+            e, l = avg_key(early, k_avg), avg_key(late, k_avg)
+            print(f"    {key:28s} {e:9.2f} -> {l:9.2f}")
 
 
 if __name__ == "__main__":

@@ -313,18 +313,32 @@ it dwarfs it. DreamerV3 optimized the reward function exactly as written —
 the reward function doesn't actually ask for the goal strongly enough
 relative to loitering safely.
 
-**Not decided today:** how to fix the imbalance. Candidates: lower
-`reward_per_clear_sensor`, cap total per-step shaping reward, raise
-`reward_progress_scale`/`reward_alignment_scale`, or penalize
-time-without-progress directly. Same treatment as collision-mode and
-train_ratio: measured, presented, deferred to a deliberate choice rather
-than changed under time pressure.
+**Resolved: lowered `reward_per_clear_sensor` from 2.5 to 0.01.** Offered
+three candidates (lower this value, cap total per-step shaping, raise the
+progress/alignment scales); the surgical option was chosen. Derivation:
+`7 * reward_per_clear_sensor` (max sensor income/step) should sit below
+`|reward_step|` (0.1) so loitering nets negative, not positive — break-even
+is `0.1/7 ≈ 0.0143`; 0.01 leaves margin. Also added `log/reached_target`
+to `car_env/embodied_env.py`, closing the observability gap this
+investigation ran into (goal-reaches had to be inferred from
+`1 - crash_rate` rather than measured). Verified via `test_embodied.py`
+before the fix, `smoke_test.py` after (random-policy mean return flips
++68.1 → -56.6, confirming existing is no longer profitable on its own).
 
-**Observability gap found along the way:** `car_env/embodied_env.py` logs
-`log/crashed` but not whether a target was reached, so "did it reach the
-goal" has to be inferred (`1 - crash_rate`, checked against
-`max_episode_steps` never being hit) rather than measured directly. Worth
-adding a `log/reached_target` field before the next run.
+**Re-ran the 60,000-step check with the fix.** Honest result, not a clean
+win: crash rate barely moved (99.8% → 96.9%), but the hack is structurally
+gone (`clear_sensors`/step: 0.03 → 0.04, negligible either way) and there's
+real directional signal that wasn't visible before — `reward_progress`/step
+flips -0.79 → **+0.16**, `reward_alignment`/step flips -0.08 → **+0.02**,
+goal-reach rate 0.2% → 3.1% (15x, measured directly this time via
+`log/reached_target`). The task remains almost entirely unsolved at this
+training budget. This is the reward function working correctly, not the
+integration failing — the old result was a false positive; this one is an
+honest, unflattering, and still-improving-in-the-right-direction baseline.
+Given the road/car geometry (14px median road, 28x16 car, `center`
+collision already the easier setting — see the scale table in
+`README.md`), a harder task than the reward bug's absence should have
+been expected.
 
 ## 6. Work items
 

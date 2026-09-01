@@ -135,6 +135,29 @@ about it. Fixed by pinning `nvidia-cudnn-cu12==9.4.0.58` (contemporaneous
 with jaxlib 0.4.33) in `requirements.txt`, verified first with a standalone
 conv op (fast to iterate) before re-running the full pipeline.
 
+### 3b. Intermittent native SIGSEGV during GPU training — worked around, not fixed
+
+The first real (non-throughput-check) training run segfaulted at step 4,528,
+98 seconds in — exit 139, no Python traceback, a native crash below JAX's
+error handling. Not yet root-caused. Ruled out `agent.report()` as the
+trigger (the natural first suspect, since every earlier successful run had
+disabled it): `report_every` is a wall-clock threshold and the crash
+happened well before it could have fired, confirmed by zero `report/` rows
+in that run's `metrics.jsonl`. Leading suspect instead is the `cuDNN
+heuristics didn't work, trying fallback algorithms` warning seen on every
+run (§3a) — fallback conv kernels are less exercised than heuristic-selected
+ones, and this box's driver (595.91.07) is far newer than the jaxlib
+0.4.33 / cuDNN 9.4.0.58 pairing pinned in §3a.
+
+Rather than spend more time isolating a native GPU crash with no
+reliable repro, worked around it: `scripts/train_carnav.sh` retries the
+identical `main.py` invocation on any nonzero exit. This needs no special
+crash-recovery logic because `elements.Checkpoint.load_or_save` already
+resumes from the last checkpoint in `--logdir` on construction — the
+resume path already existed, it just wasn't being exercised across process
+restarts. Use a low `--run.save_every` (120s used here) so a crash costs
+minutes, not the whole run.
+
 ### bfloat16 is not native on this GPU
 
 The GPU is a **Tesla T4, compute capability 7.5 (Turing)**. Hardware bf16

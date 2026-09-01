@@ -22,30 +22,14 @@ Run (needs the `dreamer` conda env):
 """
 
 import argparse
-import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent.parent / "dreamerv3"))
+from _dreamer_common import load_agent  # sets up sys.path; import first
 
-import elements
 import embodied
 import numpy as np
-import ruamel.yaml as yaml
 
 from car_env.render import save_png, tile
-
-
-def build_config(overrides):
-    from dreamerv3 import main as dm3main
-    folder = Path(dm3main.__file__).resolve().parent
-    raw = elements.Path(folder / "configs.yaml").read()
-    configs = yaml.YAML(typ="safe").load(raw)
-    config = elements.Config(configs["defaults"])
-    config = config.update(configs["carnav"])
-    config = config.update(logdir="/tmp/watch_policy_scratch")
-    config = config.update(overrides)
-    return config, dm3main
 
 
 def main():
@@ -60,21 +44,7 @@ def main():
     ap.add_argument("--cpu", action="store_true", default=True)
     args = ap.parse_args()
 
-    checkpoint = Path(args.checkpoint)
-    if (checkpoint / "latest").exists():
-        checkpoint = checkpoint / (checkpoint / "latest").read_text().strip()
-
-    config, dm3main = build_config({
-        "jax.platform": "cpu",
-        "jax.prealloc": False,
-    })
-
-    print(f"Loading agent (network sizes from the 'carnav' config preset)...")
-    agent = dm3main.make_agent(config)
-    cp = elements.Checkpoint()
-    cp.agent = agent
-    cp.load(str(checkpoint), keys=["agent"])
-    print(f"Loaded checkpoint: {checkpoint}")
+    agent, config, dm3main = load_agent(args.checkpoint)
 
     # log_topdown isn't a configs.yaml key, so it can't go through
     # config.update() (elements.Config.update requires the key to already

@@ -1,6 +1,7 @@
 .env
 __pycache__
 *.pyc
+*.egg-info/
 
 # Regenerable debug output from scripts/preview_obs.py
 previews/

@@ -96,6 +96,18 @@ crash. Note this codebase's `Agent.policy()` samples from the learned
 distribution regardless of `mode='train'`/`'eval'` — there's no separate
 greedy/deterministic eval mode to opt into here.
 
+`watch_policy_live.py` is the same idea, live, in a real window — reuses
+the persistent display stack from `T3D-car-navigation/start_display.sh`
+(Xvfb + x11vnc + noVNC), so viewing it remotely is the same SSH-tunnel
+setup as the T3D GUI:
+
+```bash
+# on the box, once (or check it's still up): T3D-car-navigation/start_display.sh --daemon
+DISPLAY=:1 python scripts/watch_policy_live.py --checkpoint <logdir>/run1/ckpt
+# on your Mac: ssh -C -N -L 5900:localhost:5900 -L 6080:localhost:6080 ubuntu@<host>
+# then vnc://localhost:5900 (Finder > Connect to Server) or http://localhost:6080/vnc.html
+```
+
 ## Throughput
 
 Measured on this box (Tesla T4, 20k random steps), after replacing the

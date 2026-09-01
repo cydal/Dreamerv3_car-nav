@@ -340,6 +340,32 @@ collision already the easier setting — see the scale table in
 `README.md`), a harder task than the reward bug's absence should have
 been expected.
 
+**500,000-step run (8.3x longer): unambiguous learning.** Same config,
+1 crash (retry wrapper handled it), ~4h16m wall clock.
+
+| | first third | last third |
+|---|---|---|
+| crash rate | 98.5% | **86.8%** |
+| goal-reach rate | 1.5% | **13.2%** |
+| episode length | 11.9 | 69.3 |
+| `distance_to_target` | 218.7 | 206.8 |
+
+Episode score climbs in a near-monotonic staircase across all 10 buckets
+of the run (-101 → ... → +414), unlike the 60k run's noise around a flat
+mean — the 60k run wasn't wrong, it was just too short to show a trend.
+Goal-reach rate is a real 9x improvement, measured directly via
+`log/reached_target`, not inferred. Visually confirmed: the goal marker
+appears in 3 of 12 sampled frames from the final training video, versus
+0 of 8 from the reward-hack run's video — the agent is visibly navigating
+toward visible goals now, not cruising empty corridors.
+
+Not a solved task (86.8% crash rate is still most episodes failing), but
+this is the first run in the integration where the naive metrics (score,
+length) and the metrics that actually matter (crash rate, goal-reach rate,
+distance-to-target) finally agree, and both say "improving." The
+remaining gap looks like training budget and task difficulty, not
+anything broken in the pipeline itself.
+
 ## 6. Work items
 
 | # | Item | Where | Status |

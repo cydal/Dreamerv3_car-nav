@@ -78,6 +78,24 @@ bearing must land in the expected third of the crop, for 6 bearings × 5
 headings, and the in-image goal marker must fall within 2px of where the goal
 geometrically is.
 
+## DreamerV3 (needs the separate `dreamer` conda env; see `docs/dreamer-integration-plan.md`)
+
+```bash
+python scripts/test_embodied.py               # embodied.Env adapter conformance
+scripts/train_carnav.sh --configs carnav ...   # resilient launcher, all args forwarded to main.py
+python scripts/analyze_run.py <logdir>/run1    # crash rate / goal-reach rate / reward_parts trend
+python scripts/watch_policy.py --checkpoint <logdir>/run1/ckpt --episodes 20
+```
+
+`watch_policy.py` loads a trained checkpoint and drives the real env with
+it on CPU, saving a top-down contact sheet (car, road, goal, sensors) per
+episode — directly comparable to what the old T3D PyQt6 GUI showed, unlike
+the small 64×64 egocentric crop the agent actually sees. Two examples in
+`notes/media/`: a goal reached after closing in over several frames, and a
+crash. Note this codebase's `Agent.policy()` samples from the learned
+distribution regardless of `mode='train'`/`'eval'` — there's no separate
+greedy/deterministic eval mode to opt into here.
+
 ## Throughput
 
 Measured on this box (Tesla T4, 20k random steps), after replacing the

@@ -32,13 +32,16 @@ VARIANTS = {
     "footprint": {"collision_mode": "footprint"},
 }
 
+TOPDOWN_VIEW_PX = 200
+TOPDOWN_SCALE = 2
+
 
 class CarNav:
     """embodied.Env over CarNavEnv. Registered in the dreamerv3 clone as
     `carnav`; task strings look like `carnav_default`, `carnav_vector`, etc.
     """
 
-    def __init__(self, task="default", seed=None, **overrides):
+    def __init__(self, task="default", seed=None, log_topdown=False, **overrides):
         if task not in VARIANTS:
             raise ValueError(
                 f"unknown carnav task {task!r}, expected one of {sorted(VARIANTS)}")
@@ -47,6 +50,12 @@ class CarNav:
         self._env = CarNavEnv(self._cfg)
         self._seed = seed
         self._done = True
+        # Off by default: a human-legible top-down render (car, road, goal,
+        # sensors), as opposed to the small egocentric crop the agent
+        # actually sees. Not fed to the agent (embodied strips 'log/' keys
+        # before policy()), so this costs nothing during training unless
+        # explicitly asked for - see scripts/watch_policy.py.
+        self._log_topdown = bool(log_topdown)
 
     @property
     def env(self):
@@ -80,6 +89,9 @@ class CarNav:
             "log/reward_alignment": elements.Space(np.float32),
             "log/reward_clear_sensors": elements.Space(np.float32),
         })
+        if self._log_topdown:
+            side = TOPDOWN_VIEW_PX * TOPDOWN_SCALE
+            spaces["log/topdown"] = elements.Space(np.uint8, (side, side, 3))
         return spaces
 
     @property
@@ -130,6 +142,10 @@ class CarNav:
             "log/reward_alignment": np.float32(parts.get("alignment", 0.0)),
             "log/reward_clear_sensors": np.float32(parts.get("clear_sensors", 0.0)),
         })
+        if self._log_topdown:
+            from .render import render_topdown
+            out["log/topdown"] = render_topdown(
+                self._env, view_px=TOPDOWN_VIEW_PX, scale=TOPDOWN_SCALE)
         return out
 
     def render(self):

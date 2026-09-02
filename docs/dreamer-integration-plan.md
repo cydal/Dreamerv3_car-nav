@@ -413,3 +413,15 @@ they don't get retried blind. Relaunched training into
 was wiped by a box restart overnight and cost us the previous 500k-step
 checkpoint. `/home/ubuntu/dreamer_runs/` is now the persistent home for
 logdirs and the JAX cache.
+
+**Result: the best run yet, on a harder task.** Zero crashes across the
+whole 500k steps (JAX compilation cache + zero native segfaults this
+time). Crash rate 98.5%→91.4%, goal-reach rate 1.5%→**8.6%**,
+`reward_progress`/step -0.00→**+1.02**, `reward_alignment`/step
+0.01→**+0.14**. Score climbs in an almost perfectly monotonic staircase
+across all 10 buckets — cleaner than the previous (easier-task) run.
+Smaller absolute improvement than the center-collision run (which reached
+13.2% goal-reach) is expected, not concerning: footprint collision on a
+10×6 car is strictly harder than center collision on a 28×16 car.
+Confirmed the full-map render fix applies to `watch_policy.py`'s saved
+contact sheets too — see `notes/media/footprint_500k_*.png`.

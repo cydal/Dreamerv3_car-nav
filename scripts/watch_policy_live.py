@@ -19,7 +19,6 @@ Press Q or close the window to quit.
 """
 
 import argparse
-import time
 from pathlib import Path
 
 from _dreamer_common import load_agent  # sets up sys.path; import first
@@ -28,33 +27,37 @@ import embodied
 import numpy as np
 import pygame
 
-WINDOW_SCALE = 2  # on top of the render's own internal scale
-
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--checkpoint", required=True)
-    ap.add_argument("--fps", type=float, default=8.0,
-                     help="frames shown per second - env steps are much "
-                          "faster than this; the point is to be watchable")
+    ap.add_argument("--fps", type=float, default=20.0,
+                     help="frames shown per second. The driver+policy+render "
+                          "pipeline sustains ~70/s on CPU with this model "
+                          "size, so this is a display pacing choice, not a "
+                          "compute limit - raise it if it still feels slow "
+                          "(and check whether you're on native VNC vs "
+                          "browser noVNC, which has ~5x transport overhead)")
+    ap.add_argument("--view", choices=["fullmap", "crop"], default="fullmap",
+                     help="fullmap: whole map fixed in frame, what the T3D "
+                          "GUI showed. crop: car-centred, follows the car.")
     args = ap.parse_args()
 
     agent, config, dm3main = load_agent(args.checkpoint)
-    env = dm3main.make_env(config, 0, log_topdown=True)
+    env = dm3main.make_env(config, 0, log_topdown=True, topdown_mode=args.view)
     driver = embodied.Driver([lambda: env], parallel=False)
 
-    side = env.obs_space["log/topdown"].shape[0]
-    win_side = side * WINDOW_SCALE
+    out_h, out_w = env.obs_space["log/topdown"].shape[:2]
 
     pygame.init()
     pygame.display.set_caption("CarNav - DreamerV3 checkpoint (live)")
-    screen = pygame.display.set_mode((win_side, win_side))
+    screen = pygame.display.set_mode((out_w, out_h))
     font = pygame.font.SysFont(None, 22)
     clock = pygame.time.Clock()
 
     state = {"episodes": 0, "length": 0}
     outcomes = {"crash": 0, "goal": 0, "timeout": 0}
-    latest = {"frame": np.zeros((side, side, 3), np.uint8), "hud": ""}
+    latest = {"frame": np.zeros((out_h, out_w, 3), np.uint8), "hud": ""}
 
     def on_step(tran, worker):
         state["length"] += 1
@@ -73,8 +76,8 @@ def main():
     driver.reset(agent.init_policy)
     policy = lambda *a: agent.policy(*a, mode="eval")
 
-    print(f"Live. Window is {win_side}x{win_side}. Ctrl+C or close the "
-          f"window to quit.")
+    print(f"Live. Window is {out_w}x{out_h} ({args.view} view). Ctrl+C or "
+          f"close the window to quit.")
     running = True
     while running:
         for event in pygame.event.get():
@@ -89,8 +92,6 @@ def main():
 
         frame = np.transpose(latest["frame"], (1, 0, 2))  # pygame is (w,h)
         surf = pygame.surfarray.make_surface(frame)
-        if WINDOW_SCALE != 1:
-            surf = pygame.transform.scale(surf, (win_side, win_side))
         screen.blit(surf, (0, 0))
 
         totals = sum(outcomes.values())

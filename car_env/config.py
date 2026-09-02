@@ -92,8 +92,13 @@ class CarNavConfig:
     # one-time +100 within ~6 steps of survival). See
     # notes/journal.md, 2026-09-01, for the training run that found this.
     reward_per_clear_sensor: float = 0.01
-    reward_progress_scale: float = 15.0
-    reward_alignment_scale: float = 3.0
+    # Raised 2026-09-02 (15->40, 3->8): the 500k-step run showed progress/
+    # alignment barely above zero per step (+0.16, +0.02) even once they
+    # were no longer competing against the oversized sensor term - not
+    # wrong, just weak. Goal-directed behavior should be the clearly
+    # dominant signal now that it isn't being drowned out by anything else.
+    reward_progress_scale: float = 40.0
+    reward_alignment_scale: float = 8.0
 
     def __post_init__(self):
         if self.collision_mode not in ("center", "footprint"):

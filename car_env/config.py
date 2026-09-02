@@ -24,18 +24,26 @@ class CarNavConfig:
     road_max_spread: int = 30
 
     # ---- car physics -----------------------------------------------------
-    car_length: float = 28.0            # along heading, pixels
-    car_width: float = 16.0             # across heading, pixels
+    # 10x16 (T3D's original size) leaves 0.0% of the road drivable under
+    # footprint collision - the whole rectangle needs 17px of clearance on a
+    # map whose median road is ~14px wide. Shrunk to 10x6: half-diagonal
+    # 5.8px -> 6px clearance -> 12.8% of road survives ("tight" but
+    # workable, per the erosion table in README.md). Deliberately harder
+    # than 8x5 (22.5%, "workable") - chosen when switching to footprint
+    # collision on 2026-09-02; see notes/journal.md for the decision.
+    car_length: float = 10.0            # along heading, pixels
+    car_width: float = 6.0              # across heading, pixels
     max_steering_deg: float = 8.0       # per step, applied to heading
     min_speed: float = 1.5              # pixels per step
     max_speed: float = 2.5
 
     # ---- collision -------------------------------------------------------
     # "center"   : only the car's centre pixel must be on road (what T3D did).
-    # "footprint": the car's whole rectangle must be on road. Stricter and more
-    #              physically honest, but harder - the car is 28x16 and the
-    #              median road on city_map.png is only ~14px wide.
-    collision_mode: str = "center"
+    # "footprint": the car's whole rectangle must be on road. Stricter and
+    #              more physically honest - the car no longer visibly clips
+    #              buildings. Needs the smaller car size above to be viable
+    #              at all on this map; see README.md's erosion table.
+    collision_mode: str = "footprint"
 
     # ---- ray sensors -----------------------------------------------------
     # Kept for optional low-dim input. NOTE the default distance is 10, not

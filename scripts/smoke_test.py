@@ -71,9 +71,10 @@ def main():
     print("CarNavEnv smoke test - random policy")
     print("=" * 68)
 
-    run(CarNavConfig(), 40, 0, "default (center collision, sensor_distance=10)")
-    run(CarNavConfig(collision_mode="footprint"), 40, 0,
-        "footprint collision (whole 28x16 car must be on road)")
+    run(CarNavConfig(), 40, 0,
+        "default (footprint collision, 10x6 car, sensor_distance=10)")
+    run(CarNavConfig(collision_mode="center", car_length=28.0, car_width=16.0), 40, 0,
+        "legacy: centre collision, 28x16 car (pre-2026-09-02 default)")
     run(CarNavConfig(num_targets=3), 20, 0, "3 chained targets")
     run(CarNavConfig(use_image=False), 20, 0, "vector-only observation")
     run(CarNavConfig(use_vector=False), 20, 0, "image-only observation")

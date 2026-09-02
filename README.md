@@ -126,34 +126,31 @@ the environment is not the bottleneck.
 
 ## Known constraint: the car does not fit the roads
 
-The map's roads have a median width of **14px** while the car is **28×16px**.
-This is inherited from the original project and it dictates the collision
-model. A car of length L and width W needs `hypot(L/2, W/2)` px of clearance to
-occupy a point at any heading; eroding the road mask by that radius gives how
-much of the map is legally drivable:
+The map's roads have a median width of **14px**. T3D's original car was
+**28×16px** — inherited from that project, and it dictates the collision
+model. A car of length L and width W needs `hypot(L/2, W/2)` px of clearance
+to occupy a point at any heading; eroding the road mask by that radius gives
+how much of the map is legally drivable:
 
 | car size | required clearance | road remaining | verdict |
 |---|---|---|---|
-| 28×16 (current) | 17px | **0.0%** | impossible |
+| 28×16 (T3D original) | 17px | 0.0% | impossible |
 | 20×12 | 12px | 0.1% | impossible |
 | 14×8 | 9px | 0.7% | impossible |
-| 10×6 | 6px | 12.8% | tight |
+| 10×6 (current default) | 6px | **12.8%** | tight |
 | 8×5 | 5px | 22.5% | workable |
 
-So `collision_mode="footprint"` (the whole car must be on road) is unusable at
-the current scale — every episode ends on step 1.
+At the original 28×16 scale, `collision_mode="footprint"` (the whole car
+must be on road) is unusable — every episode ends on step 1.
 
-**Decision: stay on `collision_mode="center"`**, which treats the car as a
-point, exactly as T3D did. The 28×16 sprite is cosmetic, so the car clips
-buildings and can pass through gaps narrower than itself — but the task is
-learnable, and this avoids retuning every distance in the config before there
-is a baseline to compare against. This is also the same geometry problem behind
-the 6-step median episodes in the original T3D run.
-
-`footprint` is kept available for when the scale is revisited. Making it usable
-would need the car shrunk to ~10×6, or the map upscaled 3–4× so roads are
-~42–56px wide (which would also mean retuning `target_min_dist`,
-`target_max_dist`, `sensor_distance` and `crop_world_px`).
+**Current default: `car_length=10, car_width=6, collision_mode="footprint"`.**
+The car's whole rectangle must be on road — no more clipping buildings or
+passing through gaps narrower than itself. This is a harder task than the
+28×16/`center` combination the project started with (12.8% of road is
+"tight," not "workable"), chosen deliberately on 2026-09-02 in exchange for
+physical honesty; see `notes/journal.md` for the reasoning and
+`car_env/embodied_env.py`'s `VARIANTS["legacy_center"]` to reproduce the
+original, easier task for comparison.
 
 ## Layout
 

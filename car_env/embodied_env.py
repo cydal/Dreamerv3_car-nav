@@ -29,7 +29,11 @@ VARIANTS = {
     "vector": {"use_image": False},
     "image": {"use_vector": False},
     "multitarget": {"num_targets": 3},
-    "footprint": {"collision_mode": "footprint"},
+    # The original T3D-scale task (28x16 car, centre-point collision) - the
+    # easier setting we trained on before switching to footprint collision
+    # by default on 2026-09-02. Kept nameable for comparison, not because
+    # it's the target task anymore.
+    "legacy_center": {"collision_mode": "center", "car_length": 28.0, "car_width": 16.0},
 }
 
 TOPDOWN_VIEW_PX = 200

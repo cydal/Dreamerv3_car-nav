@@ -57,7 +57,14 @@ class CarNavConfig:
     # ---- observation -----------------------------------------------------
     use_image: bool = True
     image_size: int = 64                # output is image_size x image_size x 3
-    crop_world_px: float = 96.0         # world extent the crop covers
+    # Raised 96->150 (2026-09-02): the car only saw ~96px of world around
+    # itself, which showed an approaching turn very late. Same 64x64 output
+    # resolution, larger extent per pixel - trades detail for lookahead
+    # range. Untested whether this matters given the vector obs already
+    # carries unbounded-range bearing/distance; goes in alongside the
+    # reward-shaping fix below since both target the same "fails at turns"
+    # symptom from different angles.
+    crop_world_px: float = 150.0        # world extent the crop covers
     egocentric_rotation: bool = True    # rotate so the car always faces "up"
     draw_target_in_image: bool = True   # stamp the goal marker when in frame
     use_vector: bool = True             # dict obs gets a "vector" entry too
@@ -92,13 +99,29 @@ class CarNavConfig:
     # one-time +100 within ~6 steps of survival). See
     # notes/journal.md, 2026-09-01, for the training run that found this.
     reward_per_clear_sensor: float = 0.01
-    # Raised 2026-09-02 (15->40, 3->8): the 500k-step run showed progress/
-    # alignment barely above zero per step (+0.16, +0.02) even once they
-    # were no longer competing against the oversized sensor term - not
-    # wrong, just weak. Goal-directed behavior should be the clearly
-    # dominant signal now that it isn't being drowned out by anything else.
+    # progress/alignment history:
+    #   15.0 / 3.0  -> original
+    #   40.0 / 8.0  -> raised 2026-09-02 morning: the first footprint run
+    #                  showed both barely above zero per step even once
+    #                  they weren't competing against the sensor term.
+    #   40.0 / 3.0  -> alignment lowered back down 2026-09-02 evening: both
+    #                  terms are straight-line proxies (progress rewards
+    #                  closing Euclidean distance, alignment rewards facing
+    #                  the target's straight-line bearing), which on a
+    #                  curved/radial road network actively fights correct
+    #                  turns - the road curving away from the straight line
+    #                  is exactly when taking it correctly scores worse on
+    #                  both terms. alignment is the more instant-by-instant
+    #                  pressure (rewards facing the target *this step*), so
+    #                  it fights a turn harder than progress does (which at
+    #                  least averages net movement over time and can
+    #                  tolerate a temporary detour). Lowering it back down
+    #                  is the smaller, safer half of addressing the "only
+    #                  reaches target when directly ahead, fails at turns"
+    #                  symptom - progress stays raised since it's less
+    #                  directly at odds with turning. See notes/journal.md.
     reward_progress_scale: float = 40.0
-    reward_alignment_scale: float = 8.0
+    reward_alignment_scale: float = 3.0
 
     def __post_init__(self):
         if self.collision_mode not in ("center", "footprint"):

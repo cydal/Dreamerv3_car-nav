@@ -379,9 +379,37 @@ anything broken in the pipeline itself.
 | 7 | Walk the verification ladder | — | ✅ rungs 1–4, see §5 |
 | 8 | Pin `nvidia-cudnn-cu12` (found while doing #7, not planned) | clone `requirements.txt`, same branch | ✅ — see §3a |
 
-Remaining: rung 5 of the ladder (a real training attempt long enough to
-judge learning, not just pipeline health), and the `train_ratio` tuning
-question from §5a.
-
 Items 1–2 are setup, 3–5 are the integration proper, 6–7 are verification.
 Nothing here writes any part of the DreamerV3 algorithm.
+
+## 7. 2026-09-02: switched to footprint collision, tried 4 tuning levers
+
+Decision (made 2026-09-01, implemented 2026-09-02): the 500k-step run's
+task — 28×16 car, `collision_mode="center"` — let the car visibly clip
+buildings and pass through gaps narrower than itself. Switched to a
+harder, more physically honest task: car shrunk to **10×6**,
+`collision_mode="footprint"`. 12.8% of road survives erosion at that size
+("tight" per the table in `README.md`, re-verified against the live
+`CityMap` before committing to the number). The previous checkpoint
+doesn't transfer — this is a fresh task.
+
+Also fixed `scripts/watch_policy_live.py`'s view: it was showing
+`render_topdown`'s car-centred crop, not the whole map the user expected
+(the same view the T3D GUI showed). Added `render_fullmap()` to
+`car_env/render.py`; it's now the default `topdown_mode`.
+
+Four tuning levers tried, three kept, one didn't do what expected two did:
+
+| lever | result |
+|---|---|
+| JAX compilation cache | ✅ real: ~67s cold → ~24s warm compile. Now default in `train_carnav.sh`. |
+| `reward_progress_scale`/`reward_alignment_scale` (15→40, 3→8) | applied; untested until the next run's results come in |
+| `size25m` | ❌ reverted — OOMs under `prealloc=False`; under `prealloc=True`, both `fps/policy` and `fps/train` come out *worse* than `size12m`. |
+| `run.debug: False` | ❌ reverted — no improvement at steady state. `agent.policy()`/`agent.train()` run in the main process regardless of env-stepping mechanism, so this only parallelizes something that was never the bottleneck. |
+
+Reasoning for both reversions kept inline in `dreamerv3/configs.yaml` so
+they don't get retried blind. Relaunched training into
+`/home/ubuntu/dreamer_runs/carnav_footprint/run1` — **not `/tmp`**, which
+was wiped by a box restart overnight and cost us the previous 500k-step
+checkpoint. `/home/ubuntu/dreamer_runs/` is now the persistent home for
+logdirs and the JAX cache.

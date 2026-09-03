@@ -34,6 +34,16 @@ VARIANTS = {
     # by default on 2026-09-02. Kept nameable for comparison, not because
     # it's the target task anymore.
     "legacy_center": {"collision_mode": "center", "car_length": 28.0, "car_width": 16.0},
+    # 2026-09-03, under a 24h deadline: vector-only for ~3x training
+    # throughput (measured - see notes/journal.md), road-distance instead
+    # of Euclidean for reward_progress + as a vector feature (fixes the
+    # curved-road reward bias structurally rather than tuning its scale
+    # again), and alignment zeroed out since it's the other straight-line-
+    # biased term and the more instant-by-instant of the two - this isolates
+    # whether removing the bias itself (not just damping it) is what was
+    # missing.
+    "fast": {"use_image": False, "use_road_distance": True,
+              "reward_alignment_scale": 0.0},
 }
 
 TOPDOWN_VIEW_PX = 200

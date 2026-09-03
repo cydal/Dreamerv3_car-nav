@@ -61,6 +61,9 @@ class CarNavEnv:
         self._prev_dist = None
         self._crashed = False
         self._last_parts = {}
+        self._road_dist_field = None
+        self._road_dist_stride = None
+        self._prev_road_dist = None
 
     # -------------------------------------------------------------- specs
     @property
@@ -83,6 +86,8 @@ class CarNavEnv:
         n = 4
         if self.cfg.use_sensors:
             n += len(self.cfg.sensor_angles_deg)
+        if self.cfg.use_road_distance:
+            n += 1
         return n
 
     # -------------------------------------------------------------- reset
@@ -106,8 +111,21 @@ class CarNavEnv:
         self._crashed = False
         self._last_parts = {}
         self._prev_dist = self._distance_to_target()
+        if self.cfg.use_road_distance:
+            self._refresh_road_distance_field()
+            self._prev_road_dist = self._road_distance_to_target()
 
         return self._observe(), self._info()
+
+    def _refresh_road_distance_field(self):
+        tx, ty = self.targets[self.target_idx]
+        self._road_dist_field, self._road_dist_stride = (
+            self.map.road_distance_field(tx, ty, stride=self.cfg.road_distance_stride))
+
+    def _road_distance_to_target(self):
+        return self.map.road_distance_lookup(
+            self._road_dist_field, self._road_dist_stride, self.x, self.y,
+            fallback=self._distance_to_target())
 
     def _sample_targets(self):
         """Chain targets outward from the car, each a hop from the previous."""
@@ -167,6 +185,9 @@ class CarNavEnv:
             if self.target_idx < len(self.targets) - 1:
                 self.target_idx += 1
                 self._prev_dist = self._distance_to_target()
+                if cfg.use_road_distance:
+                    self._refresh_road_distance_field()
+                    self._prev_road_dist = self._road_distance_to_target()
                 return cfg.reward_target, False, parts
             return cfg.reward_target, True, parts
 
@@ -178,7 +199,14 @@ class CarNavEnv:
             parts["clear_sensors"] = n_clear * cfg.reward_per_clear_sensor
             reward += parts["clear_sensors"]
 
-        if self._prev_dist is not None:
+        if cfg.use_road_distance:
+            road_dist = self._road_distance_to_target()
+            if self._prev_road_dist is not None:
+                parts["progress"] = ((self._prev_road_dist - road_dist)
+                                      * cfg.reward_progress_scale)
+                reward += parts["progress"]
+            self._prev_road_dist = road_dist
+        elif self._prev_dist is not None:
             parts["progress"] = (self._prev_dist - dist) * cfg.reward_progress_scale
             reward += parts["progress"]
         self._prev_dist = dist
@@ -224,6 +252,10 @@ class CarNavEnv:
                 vec.extend(sensor_readings(
                     self.map, self.x, self.y, self.heading,
                     self.cfg.sensor_angles_deg, self.cfg.sensor_distance).tolist())
+            if self.cfg.use_road_distance:
+                norm_road_d = min(self._road_distance_to_target()
+                                   / self.cfg.road_distance_norm, 1.0)
+                vec.append(norm_road_d)
             obs["vector"] = np.asarray(vec, dtype=np.float32)
         return obs
 

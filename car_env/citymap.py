@@ -6,6 +6,8 @@ the map is decoded once into an RGB array plus a boolean road mask, so lookups
 are array indexing and whole-footprint collision checks are vectorised.
 """
 
+from collections import deque
+
 import numpy as np
 from PIL import Image
 
@@ -157,3 +159,69 @@ class CityMap:
         i = int(rng.integers(0, len(cand)))
         j = cand[i]
         return float(xs[j]), float(ys[j])
+
+    # ------------------------------------------------------ road distance
+    def road_distance_field(self, tx, ty, stride=4):
+        """BFS shortest-path distance (in world px) from every reachable
+        road pixel back to (tx, ty), on a `stride`-downsampled grid.
+
+        Why downsampled: full-resolution BFS over ~162k road pixels takes
+        ~1.2s (measured) - fine once at map-load time, not something you can
+        redo every episode. stride=4 runs in ~63ms with ~91.5% of road
+        pixels still reachable (measured against this map); stride=8 drops
+        to ~79.1% - the median road here is only ~14px wide, so a coarser
+        grid starts disconnecting adjacent roads. This exists because
+        Euclidean distance-to-target is a bad reward/observation signal on
+        a curved road network: a road bending away from the straight line
+        to the target makes following it correctly look worse by Euclidean
+        distance, at exactly the moment it's the only viable move. Road
+        distance can't have that problem - a correct turn always reduces it.
+        See notes/journal.md, 2026-09-03.
+
+        Returns (grid, stride): grid[y, x] is the distance in world px from
+        downsampled cell (x, y) to the target, or -1 if unreached (off the
+        connected road component at this resolution - callers should fall
+        back to Euclidean distance for those cells/positions).
+        """
+        small = self.road[::stride, ::stride]
+        h, w = small.shape
+        ty_s, tx_s = int(round(ty / stride)), int(round(tx / stride))
+        ty_s = min(max(ty_s, 0), h - 1)
+        tx_s = min(max(tx_s, 0), w - 1)
+
+        dist = np.full((h, w), -1, dtype=np.int32)
+        if not small[ty_s, tx_s]:
+            # Target cell fell off the road at this resolution (rare, near
+            # map edges/thin spurs) - nudge to the nearest road cell in the
+            # downsampled grid so the field isn't just empty.
+            ys, xs = np.nonzero(small)
+            if len(xs) == 0:
+                return dist, stride
+            k = np.argmin((xs - tx_s) ** 2 + (ys - ty_s) ** 2)
+            ty_s, tx_s = int(ys[k]), int(xs[k])
+
+        dist[ty_s, tx_s] = 0
+        frontier = deque([(ty_s, tx_s)])
+        while frontier:
+            y, x = frontier.popleft()
+            d = dist[y, x]
+            for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                ny, nx = y + dy, x + dx
+                if (0 <= ny < h and 0 <= nx < w and small[ny, nx]
+                        and dist[ny, nx] < 0):
+                    dist[ny, nx] = d + 1
+                    frontier.append((ny, nx))
+        dist[dist >= 0] *= stride
+        return dist, stride
+
+    @staticmethod
+    def road_distance_lookup(field, stride, x, y, fallback):
+        """Look up (x, y)'s value in a road_distance_field grid, in world
+        px. Returns `fallback` (typically the Euclidean distance) if (x, y)
+        maps to an unreached or out-of-bounds cell."""
+        h, w = field.shape
+        gy = int(round(y / stride))
+        gx = int(round(x / stride))
+        if 0 <= gy < h and 0 <= gx < w and field[gy, gx] >= 0:
+            return float(field[gy, gx])
+        return fallback

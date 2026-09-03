@@ -69,6 +69,18 @@ class CarNavConfig:
     draw_target_in_image: bool = True   # stamp the goal marker when in frame
     use_vector: bool = True             # dict obs gets a "vector" entry too
 
+    # ---- road distance -----------------------------------------------------
+    # Added 2026-09-03: Euclidean distance/bearing (goal_features, below) is a
+    # bad reward/observation signal on a curved road network - a road bending
+    # away from the straight line to the target makes the only viable move
+    # look worse. Road distance (BFS shortest path over drivable pixels)
+    # can't have that problem: a correct turn always reduces it. See
+    # CityMap.road_distance_field and notes/journal.md for the measurements
+    # behind the stride/cost tradeoff.
+    use_road_distance: bool = False     # off by default; opt in per task
+    road_distance_stride: int = 4       # downsample factor for the BFS grid
+    road_distance_norm: float = 500.0   # normalizer for the vector feature
+
     # ---- targets ---------------------------------------------------------
     num_targets: int = 1
     target_radius: float = 20.0         # distance at which a target counts

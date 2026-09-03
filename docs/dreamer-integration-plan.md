@@ -506,3 +506,20 @@ overhead. Keeping the `actent`/`advnorm` changes rather than reverting —
 the advantage collapse may partly be a symptom of the biased reward
 creating a bad local optimum, worth testing together rather than in
 isolation.
+
+Implemented as `CityMap.road_distance_field`/`road_distance_lookup` +
+`CarNavConfig.use_road_distance` + a `"fast"` task variant (vector-only,
+road-distance on, `reward_alignment_scale: 0`). Two more measured wins
+found while validating: `batch_size: 16→64` costs nothing in `fps/train`
+(~1700-2000 either way) but averages gradients over 4x more sequences —
+a direct, free response to the diagnosed small/noisy advantage signal.
+`units: 256→64` (the encoder's vector-branch MLP width, shared with
+dec/rewhead/conhead/policy/value) cuts params 9.73M→6.62M with a small
+`fps/train` bump — it was sized for when the image branch was also
+present (`rssm.py`'s `Encoder` always projects the vector input up to
+`units` regardless of its raw dimensionality; that's the architecture,
+not a per-observation-type setting), and nothing had right-sized it since
+dropping the image. Final config launched: `task carnav_fast`,
+`batch_size 64`, `units 64`, fresh start (observation shape changed, no
+checkpoint to resume from) — 3,000,000-step target at
+`/home/ubuntu/dreamer_runs/carnav_fast/run1`.

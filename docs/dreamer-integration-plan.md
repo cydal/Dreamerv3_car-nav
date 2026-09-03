@@ -470,3 +470,39 @@ time: `analyze_run.py` gained a "training health" section (buckets
 advantage collapse); `scripts/eval_by_distance.py` productizes the
 distance-stratified eval. See `notes/journal.md`, 2026-09-03, for the full
 narrative.
+
+## 9. 2026-09-03: `actent`/`advnorm` insufficient; pivoting to road-distance under a deadline
+
+Hourly monitoring (via `/loop`, not manual `ScheduleWakeup` chaining) on
+the resumed run showed: a real ~340k-step growth phase (peaked higher than
+the pre-fix plateau), then a second plateau — and `train/adv` never
+recovered to a healthy magnitude at any point after resuming. Verdict: the
+fix helped but didn't address the mechanism; it moved where the plateau
+lands, not whether one happens. Stopped at the user's call.
+
+**New constraint: a meetup in 24 hours.** Two decisions, chosen together
+for iteration speed as much as for correctness:
+
+1. **Vector-only observations for this cycle** — measured (not assumed):
+   ~85-106 fps/policy / ~1600-2750 fps/train vs. image+vector's ~29 /
+   ~900-1300 — **~3x faster**. Justified by the diagnosis itself:
+   `train/loss/image` was never the bottleneck, so reward-side experiments
+   don't need the image channel. Temporary for this cycle, not a
+   reversion of the multi-modal design.
+2. **Road-distance instead of Euclidean distance for `reward_progress`**
+   (and as a new vector feature) — `reward_progress`/`reward_alignment`
+   are both worse the moment the road curves away from the straight line
+   to the target, which on this radial map is constantly. Tuning the
+   *scale* of that bias (done twice now) isn't removing it. A correct turn
+   always reduces road-distance (BFS shortest path over drivable pixels),
+   so this fixes the bias structurally.
+
+Checked feasibility before implementing: full-res BFS is ~1.2s/call (too
+slow per-episode); a stride-4 downsampled BFS is **~63ms** with 91.5%
+connectivity preserved (stride-8 drops to 79.1% — roads are only 14px
+median width, so overly coarse strides disconnect them). ~63ms once per
+target against ~1s of real training time per episode is acceptable
+overhead. Keeping the `actent`/`advnorm` changes rather than reverting —
+the advantage collapse may partly be a symptom of the biased reward
+creating a bad local optimum, worth testing together rather than in
+isolation.

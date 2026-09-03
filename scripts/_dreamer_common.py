@@ -4,6 +4,7 @@ dreamerv3 clone, so it stays out of the dependency-light package.
 """
 
 import sys
+from functools import partial as bind
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -22,8 +23,23 @@ def resolve_checkpoint(path):
     return path
 
 
-def load_agent(checkpoint, extra_config=None):
+def load_agent(checkpoint, extra_config=None, regex=".*"):
     """Build the carnav agent and load weights from a checkpoint.
+
+    regex is forwarded to Agent.load(regex=...) - a partial load, matching
+    checkpoint param keys against this pattern and leaving anything not
+    present in the checkpoint (e.g. a newly added Normalize submodule's
+    stats, added by an agent config change like advnorm.impl) at its
+    fresh-initialized value instead of raising a shape-mismatch error. The
+    default '.*' just means "load everything that exists in the
+    checkpoint" - safe even when nothing changed. Uses the same
+    elements.checkpoint.load(path, dict(agent=bind(agent.load, regex=...)))
+    free-function path dreamerv3/main.py's train() uses for
+    --run.from_checkpoint, rather than elements.Checkpoint's class
+    interface, which doesn't expose regex - found the hard way when this
+    module's earlier plain `cp.load(..., keys=['agent'])` call raised a
+    hard shape-mismatch trying to load a checkpoint saved before an
+    advnorm config change. See notes/journal.md, 2026-09-03.
 
     Returns (agent, config, dm3main) - dm3main is the imported
     dreamerv3.main module, handed back so callers can reuse make_env
@@ -44,8 +60,7 @@ def load_agent(checkpoint, extra_config=None):
     checkpoint = resolve_checkpoint(checkpoint)
     print("Loading agent (network sizes from the 'carnav' config preset)...")
     agent = dm3main.make_agent(config)
-    cp = elements.Checkpoint()
-    cp.agent = agent
-    cp.load(str(checkpoint), keys=["agent"])
+    elements.checkpoint.load(str(checkpoint), dict(
+        agent=bind(agent.load, regex=regex)))
     print(f"Loaded checkpoint: {checkpoint}")
     return agent, config, dm3main

@@ -45,6 +45,18 @@ def load_epstats(logdir):
     return rows
 
 
+def load_train_rows(logdir):
+    path = Path(logdir) / "metrics.jsonl"
+    rows = []
+    for line in path.read_text().splitlines():
+        if not line.strip():
+            continue
+        row = json.loads(line)
+        if "train/adv" in row:
+            rows.append(row)
+    return rows
+
+
 def bucket(steps, values, n_buckets=10):
     edges = np.linspace(steps.min(), steps.max() + 1, n_buckets + 1)
     out = []
@@ -132,6 +144,49 @@ def main():
             k_avg = f"epstats/{key}/avg"
             e, l = avg_key(early, k_avg), avg_key(late, k_avg)
             print(f"    {key:28s} {e:9.2f} -> {l:9.2f}")
+
+    train_rows = load_train_rows(logdir)
+    if train_rows:
+        # This is the diagnostic that caught the 2026-09-03 plateau: the
+        # world model (train/loss/image, /dyn, /rew) can keep improving for
+        # the entire run while the actor-critic has already stalled - the
+        # tell is train/adv (advantage) collapsing toward ~0 and staying
+        # there, with train/loss/policy going correspondingly flat. Neither
+        # of those shows up in episode/score or crash rate right away, since
+        # a stalled policy still produces a stable (just non-improving)
+        # score. Check this *during* a long run, not just at the end - it's
+        # cheap (reads the log, no extra compute) and tells you whether
+        # more training time will actually help before you spend it.
+        print("\ntraining health (world model vs actor-critic signal):")
+        tsteps = np.array([r["step"] for r in train_rows])
+        n = len(train_rows)
+        chunk = max(1, n // 10)
+        print(f"  {'step':>10}  {'loss/image':>11}  {'adv':>9}  "
+              f"{'loss/policy':>12}")
+        advs = []
+        for i in range(0, n, chunk):
+            grp = train_rows[i:i + chunk]
+            adv = float(np.mean([r["train/adv"] for r in grp]))
+            advs.append(adv)
+            print(f"  {grp[-1]['step']:>10,}  "
+                  f"{np.mean([r['train/loss/image'] for r in grp]):>11.2f}  "
+                  f"{adv:>9.4f}  "
+                  f"{np.mean([r['train/loss/policy'] for r in grp]):>12.4f}")
+
+        if len(advs) >= 4:
+            early_adv = np.mean(advs[:2])
+            late_adv = np.mean(advs[-2:])
+            if abs(early_adv) > 1e-6 and abs(late_adv) < 0.2 * abs(early_adv) \
+                    and abs(late_adv) < 0.01:
+                print(f"\n  WARNING: advantage collapsed ({early_adv:.4f} -> "
+                      f"{late_adv:.4f}) - the actor-critic has likely "
+                      f"stalled. More training time from here probably "
+                      f"won't move episode score/crash rate much even if "
+                      f"the world model losses keep improving. See "
+                      f"notes/journal.md, 2026-09-03.")
+            else:
+                print(f"\n  advantage: {early_adv:.4f} -> {late_adv:.4f} - "
+                      f"no collapse detected, training signal looks active.")
 
 
 if __name__ == "__main__":

@@ -425,3 +425,48 @@ Smaller absolute improvement than the center-collision run (which reached
 10×6 car is strictly harder than center collision on a 28×16 car.
 Confirmed the full-map render fix applies to `watch_policy.py`'s saved
 contact sheets too — see `notes/media/footprint_500k_*.png`.
+
+## 8. 2026-09-02/03 overnight run: reward/observation fixes helped, then a diagnosed plateau
+
+Launched 2M steps with `reward_alignment_scale` lowered (8→3, the
+straight-line-bearing term was fighting turns on this curved road
+network), `crop_world_px` widened (96→150, more lookahead), `batch_length`
+halved (64→32), `imag_length` doubled (15→32), and `report_every` enabled
+(the report()-causes-segfault theory that justified disabling it was
+disproven days earlier — see §3b — so there was no remaining reason to
+keep it off). Stopped by user's choice at step 1.6M once a plateau was
+confirmed.
+
+**Result: best numbers yet (14-17% goal-reach vs. 13.2%/8.6% before,
+`reward_progress`/step up to ~3 vs. ~1), then flat for ~7-8 hours from
+step ~800k on.** Diagnosed via `metrics.jsonl`, not guessed:
+`train/loss/image` declined the entire run (749→388, world model never
+stopped improving) while `train/adv` (advantage) collapsed from 0.10 to
+~0.003-0.006 by step 600k and stayed there — the value function converged
+to agree with the policy's imagined outcomes, leaving almost no gradient
+to push the policy further regardless of training time. A distance-
+stratified eval confirmed the practical effect: 30.8% goal-reach for
+targets <150px vs. 12.5-16.4% for 150-300px.
+
+**Two fixes targeting that specific mechanism**, applied via
+`--run.from_checkpoint` (resumed, not restarted — see the gotcha below):
+`agent.imag_loss.actent` 3e-4→3e-3 (counters premature convergence),
+`agent.advnorm.impl` none→meanstd (the measured advantage is tiny,
+0.003-0.03 — normalizing it should keep that signal from vanishing).
+
+**Gotcha, caught before it cost a wasted long run:** `advnorm.impl`
+changing from `none` creates new parameter variables
+(`advnorm/mean|sqrs|corr`) that don't exist in the old checkpoint — a
+naive full-checkpoint load raises a `chex` shape-mismatch, even though
+nothing about the *environment's* observation/action shapes changed.
+`dreamerv3/main.py`'s real `--run.from_checkpoint` path already handles
+this correctly via `agent.load(regex=...)` (the `from_checkpoint_regex`
+key added in §7); `scripts/_dreamer_common.py`'s simpler eval-script
+loader didn't, and got the same fix.
+
+**New tooling**, so this diagnosis doesn't have to be redone by hand next
+time: `analyze_run.py` gained a "training health" section (buckets
+`train/adv`/`train/loss/policy`/`train/loss/image`, auto-flags an
+advantage collapse); `scripts/eval_by_distance.py` productizes the
+distance-stratified eval. See `notes/journal.md`, 2026-09-03, for the full
+narrative.

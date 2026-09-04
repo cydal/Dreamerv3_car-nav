@@ -40,6 +40,11 @@ from PIL import Image, ImageDraw
 from car_env.embodied_env import CarNav
 from car_env.render import TARGET_COLOR
 
+PANEL_W = 260
+SURVIVAL_COLOR = (60, 220, 60)
+DANGER_COLOR = (230, 60, 60)
+PANEL_BG = (30, 33, 41)
+
 
 def _draw_pending(frame, targets, scale):
     """Overlay clicked-but-not-yet-started waypoint markers on a frame."""
@@ -53,6 +58,89 @@ def _draw_pending(frame, targets, scale):
         if i > 0:
             px, py = targets[i - 1]
             d.line([(px * scale, py * scale), (cx, cy)], fill=TARGET_COLOR, width=1)
+    return np.asarray(img)
+
+
+def _lerp_color(t, hi=SURVIVAL_COLOR, lo=DANGER_COLOR):
+    t = max(0.0, min(1.0, t))
+    return tuple(int(lo[i] + (hi[i] - lo[i]) * t) for i in range(3))
+
+
+def imagine_ghosts(agent, carry, cfg, x0, y0, heading0, n_samples, length):
+    """Roll the trained world model forward `n_samples` times from the
+    car's current belief state, with no real observations - genuine
+    imagination, not a scripted preview. Each sample's imagined actions are
+    replayed through the same deterministic kinematics CarNavEnv.step uses,
+    starting from the car's real current pose, to get a precise path to
+    draw - the alternative (decoding position from the vector head's
+    predicted bearing/distance) carries reconstruction error the actions
+    themselves don't. What's genuinely "imagined" here - and what varies
+    seed to seed - is the action sequence and the predicted reward/value/
+    continue-probability alongside it, all straight from agent.imagine().
+
+    Returns (paths, values) where each path is (xs, ys, continue_prob) and
+    values is the imagined value estimate at the first imagined step.
+    """
+    paths, values = [], []
+    for _ in range(n_samples):
+        _, out = agent.imagine(carry, length)
+        actions = np.asarray(out["action"]["action"])[0]
+        contp = np.asarray(out["continue_prob"])[0]
+        values.append(float(np.asarray(out["value"])[0, 0]))
+        xs, ys = [x0], [y0]
+        x, y, heading = x0, y0, heading0
+        for a in actions:
+            steer, spd = float(np.clip(a[0], -1, 1)), float(np.clip(a[1], -1, 1))
+            heading = (heading + steer * cfg.max_steering_deg) % 360.0
+            speed = cfg.min_speed + (spd + 1.0) * 0.5 * (cfg.max_speed - cfg.min_speed)
+            rad = np.radians(heading)
+            x += np.cos(rad) * speed
+            y += np.sin(rad) * speed
+            xs.append(x)
+            ys.append(y)
+        paths.append((xs, ys, contp))
+    return paths, values
+
+
+def draw_ghosts(frame, paths, scale):
+    """Blend translucent ghost paths onto a frame, faded to red where the
+    model's own continue-probability head expects trouble."""
+    img = Image.fromarray(frame).convert("RGBA")
+    overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    d = ImageDraw.Draw(overlay)
+    for xs, ys, contp in paths:
+        pts = [(x * scale, y * scale) for x, y in zip(xs, ys)]
+        for i in range(len(pts) - 1):
+            color = _lerp_color(contp[i]) + (150,)
+            d.line([pts[i], pts[i + 1]], fill=color, width=3)
+    img = Image.alpha_composite(img, overlay)
+    return np.asarray(img.convert("RGB"))
+
+
+def render_panel(height, values, paths, n_samples, length):
+    """The side panel: a big predicted-value readout plus a colour strip
+    per imagined sample showing its survival probability decaying (or not)
+    over the horizon - a direct readout of "how long the model thinks this
+    future lasts", stacked so multiple imagined futures are visible at once.
+    """
+    img = Image.new("RGB", (PANEL_W, height), PANEL_BG)
+    d = ImageDraw.Draw(img)
+    d.text((10, 10), "IMAGINATION", fill=(230, 230, 230))
+    d.text((10, 32), f"{n_samples} futures x {length} steps", fill=(150, 155, 165))
+    mean_value = float(np.mean(values)) if values else 0.0
+    d.text((10, 60), "predicted value", fill=(150, 155, 165))
+    d.text((10, 78), f"{mean_value:+.0f}", fill=(230, 230, 230))
+
+    top = 120
+    row_h = max(10, (height - top - 10) // max(1, n_samples))
+    cell_w = max(2, (PANEL_W - 20) // max(1, length))
+    for row, (xs, ys, contp) in enumerate(paths):
+        survival = np.cumprod(contp)
+        y0 = top + row * row_h
+        for i, s in enumerate(survival):
+            x0 = 10 + i * cell_w
+            d.rectangle([x0, y0, x0 + cell_w - 1, y0 + row_h - 2], fill=_lerp_color(s))
+    d.text((10, height - 22), "green = model expects to survive", fill=(110, 115, 125))
     return np.asarray(img)
 
 
@@ -76,8 +164,30 @@ def main():
                      help="task name if not carnav_default, e.g. 'fast'")
     ap.add_argument("--units", type=int, default=None,
                      help="agent MLP width if not the default 256")
+    ap.add_argument("--auto", action="store_true",
+                     help="skip the click-to-target pause - just drive "
+                          "continuously, auto-resetting on every episode "
+                          "end, using whatever target sampling the task "
+                          "config already does (e.g. carnav_fast randomises "
+                          "num_targets 1-3 on its own, no clicking needed)")
+    ap.add_argument("--imagine", action="store_true",
+                     help="show the world model's own imagined futures: a "
+                          "fan of translucent ghost paths on the map (fullmap "
+                          "view only) plus a side panel, both driven by "
+                          "agent.imagine() rolling the trained RSSM forward "
+                          "with no real observations - not a scripted replay")
+    ap.add_argument("--imagine-samples", type=int, default=5,
+                     help="number of independent imagined rollouts per "
+                          "refresh - imagination is stochastic, so each one "
+                          "can genuinely differ")
+    ap.add_argument("--imagine-length", type=int, default=20,
+                     help="imagined steps per rollout")
+    ap.add_argument("--imagine-every", type=int, default=3,
+                     help="real steps between imagination refreshes - "
+                          "agent.imagine() isn't free, so this isn't redone "
+                          "every single frame")
     args = ap.parse_args()
-    click_targets = (args.view == "fullmap")
+    click_targets = (args.view == "fullmap") and not args.auto
 
     extra_config = {}
     if args.task:
@@ -102,15 +212,19 @@ def main():
     while not isinstance(wrapped, CarNav):
         wrapped = wrapped.env
     raw_env = wrapped.env
-    scale = env.obs_space["log/topdown"].shape[1] / raw_env.map.width if click_targets else None
+    scale = (env.obs_space["log/topdown"].shape[1] / raw_env.map.width
+             if args.view == "fullmap" else None)
 
     out_h, out_w = env.obs_space["log/topdown"].shape[:2]
+    show_ghosts = args.imagine and args.view == "fullmap"
+    panel_w = PANEL_W if args.imagine else 0
 
     pygame.init()
     pygame.display.set_caption("CarNav - DreamerV3 checkpoint (live)")
-    screen = pygame.display.set_mode((out_w, out_h))
+    screen = pygame.display.set_mode((out_w + panel_w, out_h))
     font = pygame.font.SysFont(None, 22)
     clock = pygame.time.Clock()
+    ghosts = {"paths": [], "values": [], "since": 0}
 
     state = {"episodes": 0, "length": 0, "need_bootstrap": False}
     outcomes = {"crash": 0, "goal": 0, "timeout": 0}
@@ -149,7 +263,14 @@ def main():
     mode = "select" if click_targets else "drive"
     pending = []
 
-    print(f"Live. Window is {out_w}x{out_h} ({args.view} view). "
+    if args.imagine:
+        print("Warming up agent.imagine() (first call triggers a JIT "
+              "compile, a few seconds)...")
+        imagine_ghosts(agent, driver.carry, raw_env.cfg, 0.0, 0.0, 0.0, 1, 4)
+        print("Ready.")
+
+    print(f"Live. Window is {out_w + panel_w}x{out_h} ({args.view} view"
+          + (" + imagination panel" if args.imagine else "") + "). "
           + ("Click to place targets, Enter/right-click to drive, C to "
              "clear. " if click_targets else "")
           + "Q or close the window to quit.")
@@ -185,10 +306,21 @@ def main():
                 state["need_bootstrap"] = False
                 pending = []
                 mode = "select" if click_targets else "drive"
+                ghosts["paths"], ghosts["values"] = [], []
+            elif args.imagine:
+                ghosts["since"] += 1
+                if ghosts["since"] >= args.imagine_every:
+                    ghosts["since"] = 0
+                    ghosts["paths"], ghosts["values"] = imagine_ghosts(
+                        agent, driver.carry, raw_env.cfg,
+                        raw_env.x, raw_env.y, raw_env.heading,
+                        args.imagine_samples, args.imagine_length)
 
         frame = latest["frame"]
         if mode == "select" and pending:
             frame = _draw_pending(frame, pending, scale)
+        elif show_ghosts and ghosts["paths"]:
+            frame = draw_ghosts(frame, ghosts["paths"], scale)
         frame = np.transpose(frame, (1, 0, 2))  # pygame is (w,h)
         surf = pygame.surfarray.make_surface(frame)
         screen.blit(surf, (0, 0))
@@ -198,6 +330,13 @@ def main():
                 f"goal {outcomes['goal']/totals:.0%}" if totals else "no episodes yet")
         hud = font.render(f"{latest['hud']}   ({rate})", True, (255, 255, 0))
         screen.blit(hud, (6, 6))
+
+        if args.imagine:
+            panel = render_panel(out_h, ghosts["values"], ghosts["paths"],
+                                  args.imagine_samples, args.imagine_length)
+            panel_surf = pygame.surfarray.make_surface(np.transpose(panel, (1, 0, 2)))
+            screen.blit(panel_surf, (out_w, 0))
+
         pygame.display.flip()
 
         clock.tick(args.fps)

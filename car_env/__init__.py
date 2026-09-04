@@ -13,7 +13,7 @@ cleanly in a training process with no Qt and no display.
 from .citymap import CityMap
 from .config import CarNavConfig
 from .env import CarNavEnv
-from .observations import EgocentricRenderer, goal_features, sensor_readings
+from .observations import EgocentricRenderer, goal_features, sensor_distances
 
 __all__ = [
     "CarNavEnv",
@@ -21,7 +21,7 @@ __all__ = [
     "CityMap",
     "EgocentricRenderer",
     "goal_features",
-    "sensor_readings",
+    "sensor_distances",
 ]
 
 __version__ = "0.1.0"

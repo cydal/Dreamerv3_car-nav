@@ -72,7 +72,7 @@ def main():
     print("=" * 68)
 
     run(CarNavConfig(), 40, 0,
-        "default (footprint collision, 10x6 car, sensor_distance=10)")
+        "default (footprint collision, 10x6 car, sensor_max_range=45)")
     run(CarNavConfig(collision_mode="center", car_length=28.0, car_width=16.0), 40, 0,
         "legacy: centre collision, 28x16 car (pre-2026-09-02 default)")
     run(CarNavConfig(num_targets=3), 20, 0, "3 chained targets")

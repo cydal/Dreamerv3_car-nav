@@ -46,13 +46,18 @@ class CarNavConfig:
     collision_mode: str = "footprint"
 
     # ---- ray sensors -----------------------------------------------------
-    # Kept for optional low-dim input. NOTE the default distance is 10, not
-    # T3D's 20: median road width on city_map.png is ~14px, so 20px rays
-    # overshoot the road and read "obstacle" even when the car is safely
-    # centred (23% of on-road poses read 0/7). See README.
+    # Continuous ray-marched clearance per angle (see
+    # observations.sensor_distances), not a single fixed-distance binary
+    # read. That distinction is what lets max_range be long (real lookahead)
+    # without the old overshoot problem: T3D's original 20px single-endpoint
+    # read a 14px-wide corridor's own far wall as "obstacle" even when the
+    # car was centred (23% of on-road poses read 0/7 at that setting) -
+    # marching to the first actual obstacle instead of sampling one point
+    # doesn't have that failure mode, so range can go well past 20px.
     use_sensors: bool = True
-    sensor_angles_deg: Tuple[float, ...] = (-45, -30, -15, 0, 15, 30, 45)
-    sensor_distance: float = 10.0
+    sensor_angles_deg: Tuple[float, ...] = (-60, -45, -30, -15, 0, 15, 30, 45, 60)
+    sensor_max_range: float = 45.0      # marched out this far per angle, px
+    sensor_step_px: float = 1.5         # raymarch resolution, px
 
     # ---- observation -----------------------------------------------------
     use_image: bool = True
@@ -102,15 +107,39 @@ class CarNavConfig:
     reward_step: float = -0.1
     reward_crash: float = -100.0
     reward_target: float = 100.0
-    # Kept below reward_step / len(sensor_angles_deg) (0.1/7 ~ 0.014), so that
-    # surviving with every sensor clear (7 * this, per step) never outearns
-    # the per-step existence cost on its own. Without that, a policy that
-    # never approaches the goal can still rack up unbounded reward just by
-    # loitering in open space for longer - which is exactly what happened at
-    # the old value of 2.5 (7 * 2.5 = 17.5/step, dwarfing reward_target's
-    # one-time +100 within ~6 steps of survival). See
-    # notes/journal.md, 2026-09-01, for the training run that found this.
-    reward_per_clear_sensor: float = 0.01
+    # 2026-09-04: crash rate plateaued at ~77% even after the road-distance
+    # reward fix closed the far-target gap - the remaining failure mode
+    # looked like collision avoidance itself, not navigation. Replaced the
+    # old binary "count of clear sensors" bonus with three continuous terms
+    # built on sensor_distances' graded per-angle clearance:
+    #   clearance - same spirit as the old per-clear-sensor bonus (reward
+    #     open space a little), but continuous. Capped well below
+    #     |reward_step| (0.05 < 0.1) for the same reason as before: a policy
+    #     that never approaches the goal must not be able to out-earn the
+    #     per-step existence cost just by loitering somewhere open. See
+    #     notes/journal.md, 2026-09-01, for the run that found this the hard
+    #     way at the old value (7 * 2.5 = 17.5/step).
+    #   danger - a dense penalty that switches on once the *nearest* sensor
+    #     reading drops inside danger_margin_px, scaling up to
+    #     -reward_danger_scale right at the wall. This is the actual new
+    #     signal: previously the only feedback about a near-miss was the
+    #     terminal -100 crash itself, so the value function had to learn
+    #     collision risk purely from that rare terminal, several steps after
+    #     the point where avoiding it was still possible. This fires while
+    #     there's still time to react.
+    #   caution - a small bonus for slowing down specifically while inside
+    #     caution_threshold of a wall, i.e. an explicit "brake near
+    #     obstacles" incentive rather than hoping speed control emerges
+    #     indirectly from the danger penalty. Only active near a wall (not
+    #     everywhere), and capped at 0.05 - half of |reward_step| - so
+    #     hugging a wall at minimum speed can't be a profitable substitute
+    #     for making progress (min_speed itself is also a floor > 0, so the
+    #     car can never fully stop to camp on this bonus).
+    reward_clearance_scale: float = 0.05
+    danger_margin_px: float = 8.0
+    reward_danger_scale: float = 0.5
+    caution_threshold: float = 0.4
+    reward_caution_scale: float = 0.05
     # progress/alignment history:
     #   15.0 / 3.0  -> original
     #   40.0 / 8.0  -> raised 2026-09-02 morning: the first footprint run

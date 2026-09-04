@@ -42,8 +42,16 @@ VARIANTS = {
     # biased term and the more instant-by-instant of the two - this isolates
     # whether removing the bias itself (not just damping it) is what was
     # missing.
+    #
+    # 2026-09-04: added num_targets=3 - the far-target navigation problem
+    # is fixed but the env had never trained on the "reached one target,
+    # now continue to the next" transition (env.py supports chained targets
+    # architecturally, nothing before this used it in training). Needed for
+    # the multi-target click-to-drive demo in scripts/watch_policy_live.py.
+    # Continuous sensors/reward terms (car_env/config.py) also land in this
+    # same cycle, targeting the other outstanding problem: ~77% crash rate.
     "fast": {"use_image": False, "use_road_distance": True,
-              "reward_alignment_scale": 0.0},
+              "reward_alignment_scale": 0.0, "num_targets": 3},
 }
 
 TOPDOWN_VIEW_PX = 200
@@ -116,6 +124,8 @@ class CarNav:
             "log/reward_progress": elements.Space(np.float32),
             "log/reward_alignment": elements.Space(np.float32),
             "log/reward_clear_sensors": elements.Space(np.float32),
+            "log/reward_danger": elements.Space(np.float32),
+            "log/reward_caution": elements.Space(np.float32),
         })
         if self._log_topdown:
             if self._topdown_mode == "fullmap":
@@ -173,6 +183,8 @@ class CarNav:
             "log/reward_progress": np.float32(parts.get("progress", 0.0)),
             "log/reward_alignment": np.float32(parts.get("alignment", 0.0)),
             "log/reward_clear_sensors": np.float32(parts.get("clear_sensors", 0.0)),
+            "log/reward_danger": np.float32(parts.get("danger", 0.0)),
+            "log/reward_caution": np.float32(parts.get("caution", 0.0)),
         })
         if self._log_topdown:
             if self._topdown_mode == "fullmap":

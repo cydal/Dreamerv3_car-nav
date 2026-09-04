@@ -61,6 +61,19 @@ class CityMap:
             out[inside] = self.road[yi[inside], xi[inside]]
         return out
 
+    def nearest_road_point(self, x, y):
+        """Snap an arbitrary point to the closest drivable road pixel.
+
+        For turning a raw mouse click into a usable target - a click that
+        lands a pixel or two into a building shouldn't be rejected, just
+        pulled onto the nearest road.
+        """
+        if bool(self.is_road(x, y)):
+            return float(x), float(y)
+        xs, ys = self._road_xy[:, 0], self._road_xy[:, 1]
+        i = int(np.argmin((xs - x) ** 2 + (ys - y) ** 2))
+        return float(xs[i]), float(ys[i])
+
     # ------------------------------------------------------------- erosion
     @staticmethod
     def _shift(mask, delta, axis):

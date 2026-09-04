@@ -23,7 +23,7 @@ import numpy as np
 
 from .citymap import CityMap
 from .config import CarNavConfig
-from .observations import (EgocentricRenderer, goal_features, sensor_readings)
+from .observations import (EgocentricRenderer, goal_features, sensor_distances)
 
 
 class CarNavEnv:
@@ -52,6 +52,7 @@ class CarNavEnv:
 
         self._rng = np.random.default_rng()
         self.x = self.y = 0.0
+        self._prev_x = self._prev_y = 0.0
         self.heading = 0.0
         self.speed = 0.0
         self.targets = []
@@ -100,6 +101,7 @@ class CarNavEnv:
             margin=int(self.cfg.crop_world_px // 4),
         ) if self.cfg.random_start else (self.map.width / 2, self.map.height / 2)
 
+        self._prev_x, self._prev_y = self.x, self.y
         self.heading = (float(self._rng.uniform(0, 360))
                         if self.cfg.random_heading else 0.0)
         self.speed = self.cfg.min_speed
@@ -156,6 +158,7 @@ class CarNavEnv:
         span = self.cfg.max_speed - self.cfg.min_speed
         self.speed = self.cfg.min_speed + (float(a[1]) + 1.0) * 0.5 * span
 
+        self._prev_x, self._prev_y = self.x, self.y
         rad = np.radians(self.heading)
         self.x += float(np.cos(rad)) * self.speed
         self.y += float(np.sin(rad)) * self.speed
@@ -171,7 +174,8 @@ class CarNavEnv:
     def _reward_and_termination(self):
         cfg = self.cfg
         parts = {"step": cfg.reward_step, "clear_sensors": 0.0,
-                 "progress": 0.0, "alignment": 0.0, "crash": 0.0, "target": 0.0}
+                 "progress": 0.0, "alignment": 0.0, "crash": 0.0,
+                 "target": 0.0, "danger": 0.0, "caution": 0.0}
 
         if self._collided():
             self._crashed = True
@@ -193,11 +197,24 @@ class CarNavEnv:
 
         reward = cfg.reward_step
         if cfg.use_sensors:
-            n_clear = float(sensor_readings(
+            sensor_norm = sensor_distances(
                 self.map, self.x, self.y, self.heading,
-                cfg.sensor_angles_deg, cfg.sensor_distance).sum())
-            parts["clear_sensors"] = n_clear * cfg.reward_per_clear_sensor
+                cfg.sensor_angles_deg, cfg.sensor_max_range, cfg.sensor_step_px)
+            parts["clear_sensors"] = float(sensor_norm.mean()) * cfg.reward_clearance_scale
             reward += parts["clear_sensors"]
+
+            min_norm = float(sensor_norm.min())
+            min_px = min_norm * cfg.sensor_max_range
+            if min_px < cfg.danger_margin_px:
+                parts["danger"] = -cfg.reward_danger_scale * (
+                    (cfg.danger_margin_px - min_px) / cfg.danger_margin_px)
+                reward += parts["danger"]
+            if min_norm < cfg.caution_threshold:
+                speed_span = cfg.max_speed - cfg.min_speed
+                norm_speed = ((self.speed - cfg.min_speed) / speed_span
+                              if speed_span > 0 else 0.0)
+                parts["caution"] = cfg.reward_caution_scale * (1.0 - norm_speed)
+                reward += parts["caution"]
 
         if cfg.use_road_distance:
             road_dist = self._road_distance_to_target()
@@ -220,15 +237,31 @@ class CarNavEnv:
         return reward, False, parts
 
     # ---------------------------------------------------------- collisions
-    def _collided(self):
-        if self.cfg.collision_mode == "center":
-            return not bool(self.map.is_road(self.x, self.y))
+    def _footprint_clear(self, cx, cy):
         rad = np.radians(self.heading)
         c, s = np.cos(rad), np.sin(rad)
         # Rotate the footprint offsets into world space in one shot.
-        wx = self.x + self._corners[:, 0] * c - self._corners[:, 1] * s
-        wy = self.y + self._corners[:, 0] * s + self._corners[:, 1] * c
-        return not bool(self.map.is_road(wx, wy).all())
+        wx = cx + self._corners[:, 0] * c - self._corners[:, 1] * s
+        wy = cy + self._corners[:, 0] * s + self._corners[:, 1] * c
+        return bool(self.map.is_road(wx, wy).all())
+
+    def _collided(self):
+        if self.cfg.collision_mode == "center":
+            return not bool(self.map.is_road(self.x, self.y))
+        # Swept check: also sample intermediate centres along this step's
+        # straight-line displacement, not just the endpoint. A single step
+        # can move up to max_speed (2.5px) and the tightest corridors leave
+        # only ~6px of footprint clearance, so an endpoint-only check can
+        # miss a corner clipped mid-step - this used the current (post-turn)
+        # heading throughout, a reasonable approximation since heading
+        # changes at most max_steering_deg (8deg) in one step.
+        n_sub = 3
+        for t in np.linspace(1.0 / n_sub, 1.0, n_sub):
+            cx = self._prev_x + (self.x - self._prev_x) * t
+            cy = self._prev_y + (self.y - self._prev_y) * t
+            if not self._footprint_clear(cx, cy):
+                return True
+        return False
 
     # -------------------------------------------------------- observations
     def _distance_to_target(self):
@@ -249,9 +282,10 @@ class CarNavEnv:
             norm_speed = ((self.speed - self.cfg.min_speed) / span) if span > 0 else 0.0
             vec = [sin_b, cos_b, norm_d, norm_speed]
             if self.cfg.use_sensors:
-                vec.extend(sensor_readings(
+                vec.extend(sensor_distances(
                     self.map, self.x, self.y, self.heading,
-                    self.cfg.sensor_angles_deg, self.cfg.sensor_distance).tolist())
+                    self.cfg.sensor_angles_deg, self.cfg.sensor_max_range,
+                    self.cfg.sensor_step_px).tolist())
             if self.cfg.use_road_distance:
                 norm_road_d = min(self._road_distance_to_target()
                                    / self.cfg.road_distance_norm, 1.0)

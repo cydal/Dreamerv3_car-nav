@@ -10,9 +10,16 @@ from PIL import Image, ImageDraw
 CAR_COLOR = (40, 40, 40)
 CAR_NOSE = (255, 255, 255)
 TARGET_COLOR = (0, 220, 220)
-SENSOR_ON = (60, 220, 60)
-SENSOR_OFF = (230, 60, 60)
+SENSOR_CLEAR = (60, 220, 60)
+SENSOR_DANGER = (230, 60, 60)
 TRAIL_COLOR = (255, 140, 0)
+
+
+def _sensor_color(norm):
+    """Green when clear, sliding to red as normalised clearance shrinks."""
+    t = max(0.0, min(1.0, norm))
+    return tuple(int(SENSOR_DANGER[i] + (SENSOR_CLEAR[i] - SENSOR_DANGER[i]) * t)
+                 for i in range(3))
 
 
 def render_topdown(env, view_px=320, scale=2, trail=None, show_sensors=True):
@@ -60,15 +67,17 @@ def render_topdown(env, view_px=320, scale=2, trail=None, show_sensors=True):
         d.text((cx + rr + 2, cy - rr), str(i + 1), fill=TARGET_COLOR)
 
     if show_sensors and cfg.use_sensors:
-        from .observations import sensor_readings
-        vals = sensor_readings(env.map, env.x, env.y, env.heading,
-                               cfg.sensor_angles_deg, cfg.sensor_distance)
+        from .observations import sensor_distances
+        vals = sensor_distances(env.map, env.x, env.y, env.heading,
+                                cfg.sensor_angles_deg, cfg.sensor_max_range,
+                                cfg.sensor_step_px)
         for ang, v in zip(cfg.sensor_angles_deg, vals):
             rad = np.radians(env.heading + ang)
-            ex = env.x + np.cos(rad) * cfg.sensor_distance
-            ey = env.y + np.sin(rad) * cfg.sensor_distance
+            hit_dist = v * cfg.sensor_max_range
+            ex = env.x + np.cos(rad) * hit_dist
+            ey = env.y + np.sin(rad) * hit_dist
             d.line([to_img(env.x, env.y), to_img(ex, ey)],
-                   fill=(SENSOR_ON if v > 0.5 else SENSOR_OFF), width=max(1, scale))
+                   fill=_sensor_color(v), width=max(1, scale))
 
     # Car as a rotated rectangle, with a nose marker showing heading.
     rad = np.radians(env.heading)
@@ -129,15 +138,17 @@ def render_fullmap(env, max_px=900, trail=None, show_sensors=False):
             d.ellipse([cx - rr, cy - rr, cx + rr, cy + rr], fill=TARGET_COLOR)
 
     if show_sensors and cfg.use_sensors:
-        from .observations import sensor_readings
-        vals = sensor_readings(env.map, env.x, env.y, env.heading,
-                               cfg.sensor_angles_deg, cfg.sensor_distance)
+        from .observations import sensor_distances
+        vals = sensor_distances(env.map, env.x, env.y, env.heading,
+                                cfg.sensor_angles_deg, cfg.sensor_max_range,
+                                cfg.sensor_step_px)
         for ang, v in zip(cfg.sensor_angles_deg, vals):
             rad = np.radians(env.heading + ang)
-            ex = env.x + np.cos(rad) * cfg.sensor_distance
-            ey = env.y + np.sin(rad) * cfg.sensor_distance
+            hit_dist = v * cfg.sensor_max_range
+            ex = env.x + np.cos(rad) * hit_dist
+            ey = env.y + np.sin(rad) * hit_dist
             d.line([to_img(env.x, env.y), to_img(ex, ey)],
-                   fill=(SENSOR_ON if v > 0.5 else SENSOR_OFF), width=1)
+                   fill=_sensor_color(v), width=1)
 
     # True-to-scale car polygon, which can shrink to near-invisible at
     # whole-map zoom (a 28x16 car on a 1024px map at max_px=900 is ~25x14px,

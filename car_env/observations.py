@@ -134,16 +134,35 @@ class EgocentricRenderer:
         img[r0:r1, c0:c1] = (0, 255, 255)
 
 
-def sensor_readings(city_map, x, y, heading_deg, angles_deg, distance):
-    """Binary ray-cast readings: 1.0 where the ray endpoint is road.
+def sensor_distances(city_map, x, y, heading_deg, angles_deg, max_range, step_px):
+    """Ray-marched clearance per angle, normalised to [0, 1].
 
-    Note this only samples the endpoint, exactly as the original did - it is
-    not a swept ray, so a thin obstacle between car and endpoint is invisible.
+    Older version of this sampled a single fixed-distance endpoint and
+    returned a bool - "is there road exactly `distance` px away" - which
+    can't distinguish a wall right on top of the car from one nowhere
+    near it, and forced a short range (10px) to avoid false "blocked"
+    reads on this map's ~14px-wide roads (a longer single endpoint often
+    lands on the corridor's own far wall even when centred). Marching in
+    `step_px` increments up to `max_range` and returning the distance to
+    the first non-road sample fixes both problems at once: it's a graded
+    signal (small praise/danger response as a wall approaches, not a
+    binary flip) and it can look much further ahead (`max_range`) without
+    that becoming a false positive, since what comes back is "the wall
+    along this bearing is X px away", not "blocked/clear".
+
+    Returns an (len(angles_deg),) float array; 1.0 means no obstacle
+    found within max_range.
     """
-    ang = np.radians(np.asarray(angles_deg, dtype=np.float32) + heading_deg)
-    sx = x + np.cos(ang) * distance
-    sy = y + np.sin(ang) * distance
-    return city_map.is_road(sx, sy).astype(np.float32)
+    angles = np.radians(np.asarray(angles_deg, dtype=np.float64) + heading_deg)
+    n_steps = max(1, int(round(max_range / step_px)))
+    steps = np.arange(1, n_steps + 1, dtype=np.float64) * step_px
+    sx = x + np.cos(angles)[:, None] * steps[None, :]
+    sy = y + np.sin(angles)[:, None] * steps[None, :]
+    blocked = ~city_map.is_road(sx.ravel(), sy.ravel()).reshape(sx.shape)
+    hit_any = blocked.any(axis=1)
+    first_idx = np.argmax(blocked, axis=1)
+    dist_px = np.where(hit_any, (first_idx + 1) * step_px, max_range)
+    return np.clip(dist_px / max_range, 0.0, 1.0)
 
 
 def goal_features(x, y, heading_deg, target, max_dist=800.0):

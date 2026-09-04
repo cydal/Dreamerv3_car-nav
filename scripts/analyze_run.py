@@ -139,6 +139,7 @@ def main():
               "third of run):")
         keys = ["log/reward_step", "log/reward_progress",
                 "log/reward_alignment", "log/reward_clear_sensors",
+                "log/reward_danger", "log/reward_caution",
                 "log/distance_to_target"]
         for key in keys:
             k_avg = f"epstats/{key}/avg"

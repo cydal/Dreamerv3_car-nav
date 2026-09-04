@@ -27,9 +27,25 @@ def main():
     ap.add_argument("--buckets", type=float, nargs="+",
                      default=[0, 150, 200, 250, 300, 1000],
                      help="init-distance bucket edges, in world px")
+    ap.add_argument("--task", default=None,
+                     help="task name if the checkpoint wasn't trained on "
+                          "carnav_default, e.g. 'fast' - must match, or "
+                          "agent construction gets the wrong obs_space")
+    ap.add_argument("--units", type=int, default=None,
+                     help="agent MLP width if the checkpoint wasn't trained "
+                          "with the default (256) - e.g. 64 for the 'fast' "
+                          "variant's right-sized network")
     args = ap.parse_args()
 
-    agent, config, dm3main = load_agent(args.checkpoint)
+    extra_config = {}
+    if args.task:
+        extra_config["task"] = f"carnav_{args.task}"
+    if args.units:
+        for head in ("enc.simple", "dec.simple", "rewhead", "conhead",
+                     "policy", "value"):
+            extra_config[f"agent.{head}.units"] = args.units
+
+    agent, config, dm3main = load_agent(args.checkpoint, extra_config=extra_config)
     env = dm3main.make_env(config, 0, log_topdown=False)
     driver = embodied.Driver([lambda: env], parallel=False)
 

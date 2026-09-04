@@ -523,3 +523,45 @@ dropping the image. Final config launched: `task carnav_fast`,
 `batch_size 64`, `units 64`, fresh start (observation shape changed, no
 checkpoint to resume from) — 3,000,000-step target at
 `/home/ubuntu/dreamer_runs/carnav_fast/run1`.
+
+## 10. 2026-09-04: `carnav_fast` run complete — best result, far-target gap closed
+
+Ran unattended overnight under hourly `/loop` monitoring. Completed all
+3,000,000 steps cleanly, zero crashes, ~10h13m wall clock.
+
+| | first third | last third |
+|---|---|---|
+| crash rate | 91.8% | **77.5%** |
+| goal-reach rate | 8.2% | **22.5%** |
+| episode length | 6.9 | 44.0 |
+| `reward_progress`/step | 6.40 | 17.46 |
+
+Score climbed to a new session-high (2909) at the final bucket, unlike
+either prior long run, which had visibly stalled by a comparable step
+count. `analyze_run.py`'s auto-detector still flags an advantage collapse
+(0.379→0.0006) — but unlike the two Euclidean-reward runs, this collapse
+did not coincide with task performance stalling; goal-reach and score kept
+improving through the whole run. Read: the flag is a good tripwire for
+"is there any training signal left," not a substitute for checking outcome
+metrics — a shrinking advantage on a correctly-shaped reward isn't the
+same failure mode as a shrinking advantage on a biased one.
+
+**The distance-stratified gap that motivated this whole cycle has
+closed.** `eval_by_distance.py` needed `--task`/`--units` flags added
+(along with `watch_policy.py`/`watch_policy_live.py` for consistency) —
+they were hardcoded to the default architecture and raised a `chex`
+shape-mismatch against this checkpoint's different width/task. Before
+(2026-09-03, pre-pivot): 30.8% close (<150px) vs. 12.5–16.4% far
+(150–300px). After (this checkpoint, 150 episodes): **30.8% / 16.7% /
+28.4% / 32.6%** across the same buckets — roughly uniform, farthest
+bucket now the best of the four. This directly answers the original
+complaint that the model "only reaches the target when it's directly
+ahead" — confirmed visually too (`notes/media/fast_final_goal_reach.png`,
+a 197-step approach where the goal isn't even in frame until well into
+the episode; `fast_final_crash.png` for contrast). A separate 25-episode
+sample gave 40% goal-reach / 60% crash, consistent with the larger
+stratified eval's 28% overall given the small-sample size.
+
+Remaining open item: `batch_size 64`/`units 64` were passed as CLI flags
+at launch, not yet persisted into `configs.yaml`'s `carnav`/`carnav_fast`
+presets — worth doing before the next run for reproducibility.

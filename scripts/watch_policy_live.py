@@ -41,9 +41,21 @@ def main():
     ap.add_argument("--view", choices=["fullmap", "crop"], default="fullmap",
                      help="fullmap: whole map fixed in frame, what the T3D "
                           "GUI showed. crop: car-centred, follows the car.")
+    ap.add_argument("--task", default=None,
+                     help="task name if not carnav_default, e.g. 'fast'")
+    ap.add_argument("--units", type=int, default=None,
+                     help="agent MLP width if not the default 256")
     args = ap.parse_args()
 
-    agent, config, dm3main = load_agent(args.checkpoint)
+    extra_config = {}
+    if args.task:
+        extra_config["task"] = f"carnav_{args.task}"
+    if args.units:
+        for head in ("enc.simple", "dec.simple", "rewhead", "conhead",
+                     "policy", "value"):
+            extra_config[f"agent.{head}.units"] = args.units
+
+    agent, config, dm3main = load_agent(args.checkpoint, extra_config=extra_config)
     env = dm3main.make_env(config, 0, log_topdown=True, topdown_mode=args.view)
     driver = embodied.Driver([lambda: env], parallel=False)
 

@@ -161,7 +161,11 @@ def main():
         tsteps = np.array([r["step"] for r in train_rows])
         n = len(train_rows)
         chunk = max(1, n // 10)
-        print(f"  {'step':>10}  {'loss/image':>11}  {'adv':>9}  "
+        # Vector-only runs have no image branch, hence no train/loss/image -
+        # fall back to train/loss/vector as the reconstruction-quality proxy.
+        recon_key = ("train/loss/image" if "train/loss/image" in train_rows[0]
+                     else "train/loss/vector")
+        print(f"  {'step':>10}  {recon_key.split('/')[-1]:>11}  {'adv':>9}  "
               f"{'loss/policy':>12}")
         advs = []
         for i in range(0, n, chunk):
@@ -169,7 +173,7 @@ def main():
             adv = float(np.mean([r["train/adv"] for r in grp]))
             advs.append(adv)
             print(f"  {grp[-1]['step']:>10,}  "
-                  f"{np.mean([r['train/loss/image'] for r in grp]):>11.2f}  "
+                  f"{np.mean([r[recon_key] for r in grp]):>11.2f}  "
                   f"{adv:>9.4f}  "
                   f"{np.mean([r['train/loss/policy'] for r in grp]):>12.4f}")
 

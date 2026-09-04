@@ -565,3 +565,110 @@ stratified eval's 28% overall given the small-sample size.
 Remaining open item: `batch_size 64`/`units 64` were passed as CLI flags
 at launch, not yet persisted into `configs.yaml`'s `carnav`/`carnav_fast`
 presets — worth doing before the next run for reproducibility.
+
+## 11. 2026-09-04: continuous sensors + dense crash-avoidance reward, multi-target randomised, and a real world-model imagination API
+
+Crash rate plateaued at 77.5% even after §10's fix closed the far-target
+gap. Root cause found by reading `car_env/observations.py`, not by
+tuning the reward again: `sensor_readings` was a single fixed-distance
+(10px) binary sample per angle — no graded "how close" signal, and no
+lookahead, by construction. Replaced with `sensor_distances`: ray-marched
+in 1.5px steps out to 45px per angle (9 angles now, ±60°, was 7 at
+±45°), returning the normalised distance to the first actual obstacle.
+A marched ray can safely go further than a single-endpoint sample could
+(the old 10px cap existed specifically to avoid a longer single sample
+reading the corridor's own far wall as "blocked") because what comes
+back is a real distance, not a binary flip.
+
+Two new reward terms in `car_env/config.py`/`env.py`, built on that
+continuous signal: `danger` (penalty scaling up as the nearest reading
+drops inside `danger_margin_px`, replacing what used to be *only* a
+terminal -100 with no earlier warning) and `caution` (bonus for slowing
+down specifically near a wall). Both capped well below `|reward_step|`,
+same non-farmability reasoning as `reward_per_clear_sensor` (§ found
+2026-09-01). Added swept (3-sample) footprint collision checking
+alongside this — a single step can move 2.5px inside a ~6px-clearance
+corridor, so an endpoint-only check could miss a mid-step corner clip.
+
+**`num_targets` confound, caught by a user question, not by us noticing
+it ourselves:** fixing `num_targets: 3` for this retrain bundled two
+different variables into one experiment — "does the sensor/reward fix
+reduce crashes" and "is a 3x-longer required survival window just
+harder." It also doesn't match the actual need (multi-target is an
+inference-time/demo requirement, not a training necessity) — checked
+whether the continuation/discount head needs anything special for
+chained targets, and it doesn't: intermediate target-reaches return
+`terminated=False` in `env.py`, so `is_terminal`/`is_last` stay False on
+a mid-chain hit and the `con` head never sees anything but real episode
+endings, independent of chain length. Fixed the confound with
+`CarNavConfig.randomize_num_targets` — samples the chain length
+uniformly from 1 to `num_targets` per episode. Doesn't touch vector
+dimension/network shape, so the retrain resumed from the in-progress
+checkpoint with zero lost progress.
+
+**Result, using a fair same-task comparison** (`eval_by_distance.py`
+gained `--num-targets` to force a fixed chain length at eval time,
+independent of what the checkpoint trained on — the raw aggregate over a
+randomised 1-3 mix isn't comparable to the old always-1 baseline):
+
+| forced eval task | crash rate | goal-reach |
+|---|---|---|
+| single-target | **70.0%** | **30.0%** |
+| fixed 3-target chain | 94.1% | 5.9% |
+| previous best run (single-target only, §10) | 77.5% | 22.5% |
+
+A real, if modest, improvement on the comparable task (+7.5 points each
+way), not the regression the mixed-difficulty aggregate (88.6%/11.4%)
+suggested at first glance. Distance-stratified far-target gap (§9/§10)
+remains closed: 38.5%/16.7%/27.9%/23.9% across buckets, no relapse.
+`train/adv` fully collapsed by the end of this run on the 3-target task
+specifically (unlike §10's run, where a declining advantage didn't stop
+outcome metrics improving) — the continuous-sensor/dense-reward
+mechanism works, but sustained 3-target survival may need more budget or
+a different lever; not pursued further this session.
+
+Also confirmed (again, under changed conditions) that `run.debug: False`
+doesn't help even though CPU sat ~80% idle under the default threaded
+envs — the bottleneck is the main policy-inference process, not env
+parallelism, matching §7's earlier finding. And found a real box
+constraint worth remembering for future demo sessions: only 4 CPU cores
+total, so running the live-viewer demo concurrently with active training
+measurably slows the training run (fps/policy ~85-106 → ~54).
+
+### Real world-model imagination at inference time
+
+For a live demo of DreamerV3's actual imagination mechanism (not a
+scripted stand-in), added a genuinely new capability to the `dreamerv3`
+clone (`carnav-integration` branch), since nothing in the public API
+exposed `RSSM.imagine` outside the training loss:
+
+- `dreamerv3/agent.py`: `Agent.imagine_from(carry, length)` — mirrors
+  the imagination block of `loss()` (same policy function, same
+  `self.dyn.imagine` prior-only step, same rew/con/val heads), starting
+  from a single live `dyn_carry` and additionally decoding predicted
+  observations via `self.dec` (`loss()` only decodes real replayed
+  steps). Read-only — echoes `carry` back unchanged.
+- `embodied/jax/agent.py`: wired through `transform.apply`, the same
+  jitted/sharded machinery `.policy()`/`.train()`/`.report()` use — a
+  bare `nj.pure(...)` call outside that machinery hit a hard `Disallowed
+  host-to-device transfer` error on a freshly created seed constant,
+  unrelated to any carry data, because this setup pins policy/train
+  arrays to a host memory kind only `transform.apply`-wrapped calls may
+  touch. Uses `self.params`/`train_mesh` rather than
+  `self.policy_params`/`policy_mesh`, since `rew`/`con`/`val` aren't in
+  `policy_keys` (action selection never needs them, but imagination
+  does) — added train-mesh-sharded `_split_train`/`_stack_train`
+  siblings to the existing policy-mesh `_split`/`_stack`, since
+  `imagine()` still takes a Driver-style list-wrapped carry as input.
+
+`scripts/watch_policy_live.py --imagine` visualizes this live: 5
+independently-sampled ghost paths (imagined actions replayed through
+`CarNavEnv`'s real kinematics from the car's current pose, for precision
+— not decoded from the vector head's predicted position, which carries
+reconstruction error) plus a side panel, both coloured by the model's
+own decoded continue-probability at each imagined step. Confirmed
+genuinely stochastic (two calls from the same carry diverge) and
+genuinely predictive of the training signal (an early-episode call
+imagined reward collapsing to ~-97 and survival probability dropping
+from 0.997 to 0.03 within a handful of steps — matching `reward_crash =
+-100`).

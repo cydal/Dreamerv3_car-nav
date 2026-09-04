@@ -43,15 +43,21 @@ VARIANTS = {
     # whether removing the bias itself (not just damping it) is what was
     # missing.
     #
-    # 2026-09-04: added num_targets=3 - the far-target navigation problem
-    # is fixed but the env had never trained on the "reached one target,
-    # now continue to the next" transition (env.py supports chained targets
-    # architecturally, nothing before this used it in training). Needed for
-    # the multi-target click-to-drive demo in scripts/watch_policy_live.py.
-    # Continuous sensors/reward terms (car_env/config.py) also land in this
-    # same cycle, targeting the other outstanding problem: ~77% crash rate.
+    # 2026-09-04: added num_targets=3 (randomised down to 1-3 per episode,
+    # not fixed - see randomize_num_targets in config.py) - the far-target
+    # navigation problem is fixed but the env had never trained on the
+    # "reached one target, now continue to the next" transition (env.py
+    # supports chained targets architecturally, nothing before this used it
+    # in training). Needed for the multi-target click-to-drive demo in
+    # scripts/watch_policy_live.py. Randomised rather than fixed so most
+    # episodes stay at the easier single-target difficulty - fixing it at 3
+    # confounded "is the sensor/reward fix working" with "is 3x the required
+    # survival duration just harder", and crash rate wasn't moving under the
+    # fixed version. Continuous sensors/reward terms (car_env/config.py)
+    # also land in this same cycle, targeting ~77% crash rate.
     "fast": {"use_image": False, "use_road_distance": True,
-              "reward_alignment_scale": 0.0, "num_targets": 3},
+              "reward_alignment_scale": 0.0, "num_targets": 3,
+              "randomize_num_targets": True},
 }
 
 TOPDOWN_VIEW_PX = 200

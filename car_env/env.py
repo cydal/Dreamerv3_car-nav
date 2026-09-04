@@ -131,9 +131,12 @@ class CarNavEnv:
 
     def _sample_targets(self):
         """Chain targets outward from the car, each a hop from the previous."""
+        n = self.cfg.num_targets
+        if self.cfg.randomize_num_targets:
+            n = int(self._rng.integers(1, max(1, n) + 1))
         targets = []
         ax, ay = self.x, self.y
-        for _ in range(max(1, self.cfg.num_targets)):
+        for _ in range(max(1, n)):
             pt = self.map.road_points_within(
                 ax, ay, self.cfg.target_min_dist, self.cfg.target_max_dist,
                 self._rng, clearance=self.cfg.spawn_clearance)

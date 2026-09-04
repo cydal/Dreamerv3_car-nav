@@ -88,6 +88,16 @@ class CarNavConfig:
 
     # ---- targets ---------------------------------------------------------
     num_targets: int = 1
+    # 2026-09-04: sampling a fixed chain length for every episode confounds
+    # two different things in one setting - "does the agent generalise to a
+    # relocated target mid-episode" (an observation/RSSM-state question,
+    # answered by ever practicing the transition at all) and "how long must
+    # it survive to see a reward" (a difficulty knob). Randomizing episode
+    # length between 1 and num_targets keeps most episodes at the easier,
+    # faster-signal end while still directly training the target-switch
+    # transition, rather than leaving it as an untested inference-time
+    # generalisation hope. See notes/journal.md, 2026-09-04.
+    randomize_num_targets: bool = False
     target_radius: float = 20.0         # distance at which a target counts
     target_min_dist: float = 120.0      # sampled range from the car at reset
     target_max_dist: float = 300.0

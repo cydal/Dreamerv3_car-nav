@@ -186,6 +186,13 @@ def main():
                      help="real steps between imagination refreshes - "
                           "agent.imagine() isn't free, so this isn't redone "
                           "every single frame")
+    ap.add_argument("--random-agent", action="store_true",
+                     help="skip loading the checkpoint's weights - drive "
+                          "with a freshly-initialized (random), never-"
+                          "trained agent instead. --checkpoint is still "
+                          "required (only used to resolve task/units - the "
+                          "actual weights are never read), for a quick "
+                          "before/after contrast against a trained run")
     args = ap.parse_args()
     click_targets = (args.view == "fullmap") and not args.auto
 
@@ -197,7 +204,8 @@ def main():
                      "policy", "value"):
             extra_config[f"agent.{head}.units"] = args.units
 
-    agent, config, dm3main = load_agent(args.checkpoint, extra_config=extra_config)
+    agent, config, dm3main = load_agent(args.checkpoint, extra_config=extra_config,
+                                         skip_weights=args.random_agent)
     env = dm3main.make_env(config, 0, log_topdown=True, topdown_mode=args.view)
     driver = embodied.Driver([lambda: env], parallel=False)
 

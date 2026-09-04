@@ -23,8 +23,14 @@ def resolve_checkpoint(path):
     return path
 
 
-def load_agent(checkpoint, extra_config=None, regex=".*"):
+def load_agent(checkpoint, extra_config=None, regex=".*", skip_weights=False):
     """Build the carnav agent and load weights from a checkpoint.
+
+    skip_weights=True builds the agent with its freshly-initialized
+    (random) parameters and never touches `checkpoint` at all - for
+    showing what an untrained/never-trained agent looks like, e.g. as a
+    before/after contrast. Task/config still come from `extra_config`,
+    same as normal.
 
     regex is forwarded to Agent.load(regex=...) - a partial load, matching
     checkpoint param keys against this pattern and leaving anything not
@@ -57,10 +63,14 @@ def load_agent(checkpoint, extra_config=None, regex=".*"):
     if extra_config:
         config = config.update(extra_config)
 
-    checkpoint = resolve_checkpoint(checkpoint)
     print("Loading agent (network sizes from the 'carnav' config preset)...")
     agent = dm3main.make_agent(config)
-    elements.checkpoint.load(str(checkpoint), dict(
-        agent=bind(agent.load, regex=regex)))
-    print(f"Loaded checkpoint: {checkpoint}")
+    if skip_weights:
+        print("Skipping checkpoint weights - agent is freshly initialized "
+              "(random), never trained.")
+    else:
+        checkpoint = resolve_checkpoint(checkpoint)
+        elements.checkpoint.load(str(checkpoint), dict(
+            agent=bind(agent.load, regex=regex)))
+        print(f"Loaded checkpoint: {checkpoint}")
     return agent, config, dm3main

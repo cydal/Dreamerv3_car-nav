@@ -35,6 +35,12 @@ def main():
                      help="agent MLP width if the checkpoint wasn't trained "
                           "with the default (256) - e.g. 64 for the 'fast' "
                           "variant's right-sized network")
+    ap.add_argument("--num-targets", type=int, default=None,
+                     help="force a fixed chain length instead of whatever "
+                          "the task variant set (e.g. carnav_fast randomises "
+                          "1-3) - needed for an apples-to-apples comparison "
+                          "against a checkpoint trained on a different "
+                          "target-count distribution")
     args = ap.parse_args()
 
     extra_config = {}
@@ -46,7 +52,11 @@ def main():
             extra_config[f"agent.{head}.units"] = args.units
 
     agent, config, dm3main = load_agent(args.checkpoint, extra_config=extra_config)
-    env = dm3main.make_env(config, 0, log_topdown=False)
+    env_overrides = {}
+    if args.num_targets:
+        env_overrides = {"num_targets": args.num_targets,
+                          "randomize_num_targets": False}
+    env = dm3main.make_env(config, 0, log_topdown=False, **env_overrides)
     driver = embodied.Driver([lambda: env], parallel=False)
 
     results = []
